@@ -138,9 +138,10 @@ def clp_solver(matrix_a_eq: coo_matrix, vector_b_eq: np.ndarray,
         status = "optimal"
         solution = solver.primalVariableSolution['variables']
         if details:
-            dual = solver.dualVariableSolution['variables']
-            constraints_additional_info_ineq["dual"] = dual[:matrix_a_ineq.shape[0]].tolist()
-            constraints_additional_info_eq["dual"] = dual[matrix_a_ineq.shape[0]:].tolist()
+            dual = solver.dualConstraintSolution
+            dual_keys = list(dual.keys())
+            constraints_additional_info_ineq["dual"] = dual[dual_keys[0]].tolist()
+            constraints_additional_info_eq["dual"] = dual[dual_keys[1]].tolist()
 
         # if we added an additional variable artificially
         # we remove it
