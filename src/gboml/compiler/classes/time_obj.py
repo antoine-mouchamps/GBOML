@@ -158,6 +158,7 @@ class TimeInterval:
 
             return range(begin_value, end_value + 1, step_value)
         else:
+
             begin_value = eval(self.begin.turn_to_python_expression(),
                                definitions, {})
             end_value = eval(self.end.turn_to_python_expression(),
@@ -291,8 +292,9 @@ class TimeInterval:
 
             value = int(value)
 
-        #elif isinstance(value, np.ndarray):
-        #    value = np.array(value, dtype=np.int64)
+        elif isinstance(value, np.ndarray):
+            if value.size == 1:
+                value = int(value)
 
         return value
 

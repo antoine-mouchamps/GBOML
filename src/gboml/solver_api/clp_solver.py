@@ -30,7 +30,8 @@ def clp_solver(matrix_a_eq: coo_matrix, vector_b_eq: np.ndarray,
                matrix_a_ineq: coo_matrix, vector_b_ineq: np.ndarray,
                vector_c: np.ndarray,
                objective_offset: float,
-               name_tuples: list) -> tuple:
+               name_tuples: list,
+               details=False) -> tuple:
     """clp_solver
 
         takes as input the matrix A, the vectors b and c. It returns the
@@ -130,9 +131,16 @@ def clp_solver(matrix_a_eq: coo_matrix, vector_b_eq: np.ndarray,
         solver = s
     solution = None
     objective = None
+    constraints_additional_info_eq = dict()
+    constraints_additional_info_ineq = dict()
+
     if status_code == "solution":
         status = "optimal"
         solution = solver.primalVariableSolution['variables']
+        if details:
+            dual = solver.dualVariableSolution['variables']
+            constraints_additional_info_ineq["dual"] = dual[:matrix_a_ineq.shape[0]].tolist()
+            constraints_additional_info_eq["dual"] = dual[matrix_a_ineq.shape[0]:].tolist()
 
         # if we added an additional variable artificially
         # we remove it
@@ -151,4 +159,7 @@ def clp_solver(matrix_a_eq: coo_matrix, vector_b_eq: np.ndarray,
     else:
 
         status = "unknown"
-    return solution, objective, status, solver_info
+
+    constraints_additional_information = {"eq": constraints_additional_info_eq,
+                                          "ineq": constraints_additional_info_ineq}
+    return solution, objective, status, solver_info, constraints_additional_information

@@ -566,6 +566,8 @@ class Factorize:
             b_expr = self.get_indep_expr().turn_to_python_expression()
             sign = constraint.get_sign()
             self.extension_type = sign
+            bit_array = ByteArray(1)
+            gl["extension_range"] = bit_array
             time_range = constraint.get_time_range(gl)
             name_index = constraint.get_index_var()
             condition = constraint.get_condition()
@@ -621,7 +623,7 @@ class Factorize:
                            + " at line " + str(constraint.get_line())
                            + " has a time range ill-defined as a "
                              "variable goes out of bounds for "
-                           + str(name_index) + " equals " + str(numpy_range[not bit_array.array]))
+                           + str(name_index) + " equals " + str(numpy_range[~bit_array.array]))
                 all_values.append(coef_values)
                 all_columns.append(offset + index)
             previous_child_values = np.array([[]])
@@ -690,7 +692,7 @@ class Factorize:
             if not bit_array.array.any():
                 print("Warning constraint : %s at line %s is ignored for %s equal to %s"
                       % (str(constraint), str(constraint.get_line()), str(name_index),
-                         str(numpy_range[not bit_array.array])))
+                         str(numpy_range[~bit_array.array])))
 
             if nb_valid_indexes == 0:
                 self.sparse = None
@@ -717,7 +719,9 @@ class Factorize:
         elif self.type_fact == "objective":
             objective = self.obj
             obj_expr = objective.get_expression()
-            obj_range = objective.get_time_range(definitions)
+            bit_array = ByteArray(1)
+            gl["extension_range"] = bit_array
+            obj_range = objective.get_time_range(gl)
             name_index = objective.get_index_var()
             obj_type = objective.get_type()
             self.extension_type = obj_type
@@ -767,7 +771,7 @@ class Factorize:
                            + " at line " + str(objective.get_line())
                            + " has a time range ill-defined as a "
                              "variable goes out of bounds for "
-                           + str(name_index) + " equals " + str(numpy_range[not bit_array.array]))
+                           + str(name_index) + " equals " + str(numpy_range[~bit_array.array]))
                 all_values.append(coef_values)
                 all_columns.append(offset + index)
             previous_child_values = np.array([[]])
@@ -832,7 +836,7 @@ class Factorize:
             if not bit_array.array.any():
                 print("Warning constraint : %s at line %s is ignored for %s equal to %s"
                       % (str(objective), str(objective.get_line()), str(name_index),
-                         str(numpy_range[not bit_array.array])))
+                         str(numpy_range[~bit_array.array])))
 
             if nb_valid_indexes == 0 or len(values_flat_array) == 0:
                 self.sparse = None

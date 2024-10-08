@@ -135,8 +135,9 @@ def main():
                 scipy_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples)
         elif args.clp:
 
-            x, objective, status, solver_info = \
-                clp_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples)
+            x, objective, status, solver_info, constraints_additional_information = \
+                clp_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
+                           details=args.detailed)
         elif args.cbc:
 
             x, objective, status, solver_info = \

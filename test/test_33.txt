@@ -1,0 +1,9 @@
+#NODE A
+#PARAMETERS
+parameter = {3, 2, 3};
+#VARIABLES
+internal : x[12];
+#CONSTRAINTS
+hi: x[i] == 1 for i in [0:parameter[0]];
+#OBJECTIVES
+min: x[i] for i in [0:parameter[0]];

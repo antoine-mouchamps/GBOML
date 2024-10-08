@@ -520,6 +520,18 @@ class CompilerTests(unittest.TestCase):
         return_code = process.returncode
         self.assertNotEqual(return_code, 0)
 
+    def test_array_in_for(self):
+        """ test_array_in_for
+
+        Tests a simple file with an array in for
+
+        """
+        process = subprocess.run(['gboml', 'test/test_33.txt'],
+                                 stdout=subprocess.PIPE,
+                                 universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
     def test_sum_objective(self):
         """ test_sum_objective
 
