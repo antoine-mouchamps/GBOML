@@ -76,6 +76,7 @@ class GbomlGraph:
         self.matrix_b_eq = None
         self.vector_c = None
         self.indep_term_c = None
+        self.alone_term_c = None
 
     def __add_node(self, to_add_node):
         """
@@ -229,6 +230,7 @@ class GbomlGraph:
         self.matrix_b_eq = vector_b_eq
         self.vector_c = vector_c
         self.indep_term_c = indep_terms_c
+        self.alone_term_c = alone_term_c
 
     def __solve(self, solver_function):
         """
@@ -252,7 +254,7 @@ class GbomlGraph:
 
         """
         vector_c = np.asarray(self.vector_c.sum(axis=0), dtype=float)
-        objective_offset = float(self.indep_term_c.sum())
+        objective_offset = float(self.indep_term_c.sum())+self.alone_term_c
         return solver_function(self.matrix_a_eq, self.matrix_b_eq,
                                self.matrix_a_ineq, self.matrix_b_ineq, vector_c,
                                objective_offset, self.program.get_tuple_name())
