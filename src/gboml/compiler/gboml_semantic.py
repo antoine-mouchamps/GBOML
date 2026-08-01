@@ -4,9 +4,24 @@
 # Licensed under the MIT License (see LICENSE file).
 
 
-from .classes import Expression, \
-    Program, Node, Identifier, Factorize, Hyperedge, Variable, Sizing, State, \
-    Action, Auxiliary, MDPObjective, MDP, Time, Parameter, Condition
+from .classes import (
+    Expression,
+    Program,
+    Node,
+    Identifier,
+    Factorize,
+    Hyperedge,
+    Variable,
+    Sizing,
+    State,
+    Action,
+    Auxiliary,
+    MDPObjective,
+    MDP,
+    Time,
+    Parameter,
+    Condition,
+)
 from .classes.error import RedefinitionError
 
 import numpy as np  # type: ignore

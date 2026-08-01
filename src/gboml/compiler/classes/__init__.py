@@ -14,7 +14,7 @@ from .variable import Variable
 from .objective import Objective
 from .node import Node
 from .condition import Condition
-from .factor import Factorize
+from .factorization import Factorize
 from .mdp import MDP, State, Action, Auxiliary, Sizing, MDPObjective
 from .limited_size_dict import LimitedSizeDict
 
