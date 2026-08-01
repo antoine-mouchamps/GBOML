@@ -825,6 +825,339 @@ class CompilerTests(unittest.TestCase):
         return_code = process.returncode
         self.assertEqual(return_code, 0)
 
+    def test_quadratic_constraint(self):
+        """ test_quadratic_constraint
+
+        Tests a bilinear constraint written in a #CONSTRAINTS block. The
+        problem minimises x*y subject to x+y == 6 and 1 <= x,y <= 5, whose
+        optimum is 5 at both ends of the range, hence 15 over three time steps
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test34_quadratic.txt', "--gurobi", "--json",
+             "--output", "test/test34_quadratic"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+        with open("test/test34_quadratic.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            self.assertAlmostEqual(solution["objective"], 15.0, places=4)
+            variables = solution["elements"]["A"]["variables"]
+            for x_i, y_i, z_i in zip(variables["x"]["values"],
+                                     variables["y"]["values"],
+                                     variables["z"]["values"]):
+                self.assertAlmostEqual(x_i + y_i, 6.0, places=4)
+                self.assertAlmostEqual(z_i, x_i * y_i, places=4)
+
+    def test_quadratic_sum(self):
+        """ test_quadratic_sum
+
+        Tests a sum of products of two variables, the range of the sum not
+        depending on the index of the constraint
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test35_quadratic_sum.txt', "--gurobi", "--json",
+             "--output", "test/test35_quadratic_sum"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+        with open("test/test35_quadratic_sum.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            # 2*1*2 + 3*2*2 + 4*3*2 = 40 for each of the two time steps
+            self.assertAlmostEqual(solution["objective"], 80.0, places=4)
+
+    def test_quadratic_hyperedge(self):
+        """ test_quadratic_hyperedge
+
+        Tests a quadratic constraint defined in a hyperedge, coupling the
+        variables of two nodes through a product
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test36_quadratic_hyperedge.txt', "--gurobi",
+             "--json", "--output", "test/test36_quadratic_hyperedge"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+        with open("test/test36_quadratic_hyperedge.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            # a == 3 and b == 4 give p == 12 for each of the two time steps
+            self.assertAlmostEqual(solution["objective"], 30.0, places=4)
+            nodes = solution["elements"]
+            for p_i in nodes["B"]["variables"]["p"]["values"]:
+                self.assertAlmostEqual(p_i, 12.0, places=4)
+
+    def test_quadratic_sum_shadowing(self):
+        """ test_quadratic_sum_shadowing
+
+        Tests a sum whose index shadows the index of the constraint, the
+        expressions outside of the sum having to keep being expanded over the
+        index of the constraint
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test43_quadratic_sum_shadowing.txt', "--gurobi",
+             "--json", "--output", "test/test43_quadratic_sum_shadowing"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+        with open("test/test43_quadratic_sum_shadowing.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            # x is minimised to one, so both z equal x[0]**2 + x[1]**2 == 2
+            for z_i in solution["elements"]["A"]["variables"]["z"]["values"]:
+                self.assertAlmostEqual(z_i, 2.0, places=4)
+            self.assertAlmostEqual(solution["objective"], 60.0, places=4)
+
+    def test_quadratic_degree_three(self):
+        """ test_quadratic_degree_three
+
+        Tests a file with a product of three variables, which is of a degree
+        higher than the highest one accepted
+
+        """
+        process = subprocess.run(['gboml',
+                                  'test/test37_quadratic_degree_three.txt'],
+                                 stdout=subprocess.PIPE,
+                                 universal_newlines=True)
+        return_code = process.returncode
+        self.assertNotEqual(return_code, 0)
+
+    def test_quadratic_division(self):
+        """ test_quadratic_division
+
+        Tests a file with a variable in the denominator of a division
+
+        """
+        process = subprocess.run(['gboml',
+                                  'test/test38_quadratic_division.txt'],
+                                 stdout=subprocess.PIPE,
+                                 universal_newlines=True)
+        return_code = process.returncode
+        self.assertNotEqual(return_code, 0)
+
+    def test_quadratic_sum_index_dependent_range(self):
+        """ test_quadratic_sum_index_dependent_range
+
+        Tests a quadratic constraint holding a sum whose range depends on the
+        index of the constraint. It used to be rejected up front, the
+        quadratic factorization not being able to unroll a ragged range, and
+        compiles since the factorizer rewrite
+
+        """
+        process = subprocess.run(['gboml',
+                                  'test/test39_quadratic_sum_range.txt',
+                                  "--gurobi"],
+                                 stdout=subprocess.PIPE,
+                                 universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+    def test_quadratic_unbounded_variable(self):
+        """ test_quadratic_unbounded_variable
+
+        Tests a file where a variable involved in a product of two variables
+        has no upper bound, which must be reported rather than inferred
+
+        """
+        process = subprocess.run(['gboml',
+                                  'test/test40_quadratic_unbounded.txt'],
+                                 stdout=subprocess.PIPE,
+                                 universal_newlines=True)
+        return_code = process.returncode
+        self.assertNotEqual(return_code, 0)
+        self.assertIn("A.x", process.stdout)
+
+    def test_quadratic_bounded_variable(self):
+        """ test_quadratic_bounded_variable
+
+        Tests that the very same file compiles once the missing bound is
+        written back
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test42_quadratic_bounded.txt', "--gurobi"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+    def test_non_quadratic_in_constraints_block(self):
+        """ test_non_quadratic_in_constraints_block
+
+        Tests that a non linearity which is not a product of two variables,
+        here a variable in an exponent, is still rejected
+
+        """
+        process = subprocess.run(['gboml',
+                                  'test/test41_non_quadratic_constraints.txt'],
+                                 stdout=subprocess.PIPE,
+                                 universal_newlines=True)
+        return_code = process.returncode
+        self.assertNotEqual(return_code, 0)
+
+    def test_quadratic_wrong_solver(self):
+        """ test_quadratic_wrong_solver
+
+        Tests that a solver which does not support quadratic constraints
+        aborts rather than silently dropping them
+
+        """
+        process = subprocess.run(['gboml', 'test/test34_quadratic.txt',
+                                  "--clp"],
+                                 stdout=subprocess.PIPE,
+                                 universal_newlines=True)
+        return_code = process.returncode
+        self.assertNotEqual(return_code, 0)
+
+    def test_quadratic_objective(self):
+        """ test_quadratic_objective
+
+        Tests an objective which is a sum of squares. Spreading a total of six
+        over three time steps gives three times two squared
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test44_quadratic_objective.txt', "--gurobi",
+             "--json", "--output", "test/test44_quadratic_objective"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+        # a sum of squares is convex, so it is solved without any spatial
+        # branching, which is what the NonConvex parameter would enable
+        self.assertNotIn("NonConvex", process.stdout)
+
+        with open("test/test44_quadratic_objective.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            self.assertAlmostEqual(solution["objective"], 12.0, places=4)
+            node = solution["elements"]["A"]
+            for x_i in node["variables"]["x"]["values"]:
+                self.assertAlmostEqual(x_i, 2.0, places=4)
+            # the value reported for the objective covers its quadratic part
+            self.assertAlmostEqual(node["objectives"]["named"]["cost"], 12.0,
+                                   places=4)
+
+    def test_quadratic_objective_maximised(self):
+        """ test_quadratic_objective_maximised
+
+        Tests that maximising a sum of squares, which is not convex, is solved
+        by spatial branching and reaches the bound of the variables
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test45_quadratic_objective_max.txt', "--gurobi",
+             "--json", "--output", "test/test45_quadratic_objective_max"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+        self.assertIn("NonConvex", process.stdout)
+
+        with open("test/test45_quadratic_objective_max.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            # both variables reach three in absolute value, giving 2*9. A
+            # maximised objective is reported negated at the top level, as it
+            # is the value of the minimisation the solver was handed, and put
+            # back the right way round for the objective of the node itself
+            self.assertAlmostEqual(solution["objective"], -18.0, places=4)
+            self.assertAlmostEqual(
+                solution["elements"]["A"]["objectives"]["named"]["cost"],
+                18.0, places=4)
+
+    def test_quadratic_convex_needs_no_bound(self):
+        """ test_quadratic_convex_needs_no_bound
+
+        Tests that a convex quadratic constraint compiles without the bounds a
+        spatial branching would have needed, as none is performed
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test46_quadratic_convex_constraint.txt',
+             "--gurobi", "--json",
+             "--output", "test/test46_quadratic_convex_constraint"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+        self.assertNotIn("NonConvex", process.stdout)
+
+        with open("test/test46_quadratic_convex_constraint.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            # x**2 <= 4 gives x <= 2, maximised over the two time steps and
+            # reported negated at the top level as every maximisation is
+            self.assertAlmostEqual(solution["objective"], -4.0, places=4)
+            for x_i in solution["elements"]["A"]["variables"]["x"]["values"]:
+                self.assertAlmostEqual(x_i, 2.0, places=4)
+
+    def test_quadratic_objective_unbounded(self):
+        """ test_quadratic_objective_unbounded
+
+        Tests that a variable of a non convex objective which has no upper
+        bound is reported, exactly as one of a non convex constraint is
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test47_quadratic_objective_unbounded.txt'],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertNotEqual(return_code, 0)
+        self.assertIn("A.x", process.stdout)
+
+    def test_quadratic_objective_wrong_solver(self):
+        """ test_quadratic_objective_wrong_solver
+
+        Tests that a solver which does not support a quadratic objective
+        aborts rather than solving the linear part alone
+
+        """
+        process = subprocess.run(['gboml',
+                                  'test/test44_quadratic_objective.txt',
+                                  "--clp"],
+                                 stdout=subprocess.PIPE,
+                                 universal_newlines=True)
+        return_code = process.returncode
+        self.assertNotEqual(return_code, 0)
+
+
+    def solve_sum_semantics(self, model, name):
+        """ solve_sum_semantics
+
+        Runs one of the sum semantics models and returns its variables. Every
+        variable of those models is pinned by an equality, so the feasible set
+        is a single point and a disagreement is a factorization bug rather than
+        a tolerance
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/' + model + '.txt', "--gurobi", "--json",
+             "--output", "test/" + model + "_" + name],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/" + model + "_" + name + ".json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+
+        return solution["elements"]["A"]["variables"]
+
     def test_sum_ragged_range(self):
         """ test_sum_ragged_range
 
@@ -1100,6 +1433,62 @@ class GBOMLpyTest(unittest.TestCase):
         sys.stdout = temp
         self.assertEqual(solution[0].all(), np.array(
             [0., 0., 6.9, 0., 0., 0., 0., 6.9, 0., 0., 0., 4.]).all())
+
+    def test_quadratic_build_and_solve(self):
+        """ test_quadratic_build_and_solve
+
+        Tests building a graph holding a quadratic constraint through the
+        python interface and solving it with Gurobi
+
+        """
+        import os
+        import sys
+        f = open(os.devnull, 'w')
+        temp = sys.stdout
+        sys.stdout = f
+
+        gboml_model = GbomlGraph(3)
+        nodes, edges, global_params = gboml_model.import_all_nodes_and_edges(
+            "test/test34_quadratic.txt")
+        gboml_model.add_nodes_in_model(*nodes)
+        gboml_model.add_hyperedges_in_model(*edges)
+        gboml_model.add_global_parameters(global_params)
+        gboml_model.build_model()
+        quadratic_part = gboml_model.quadratic_part
+        _, objective, _, _, _, _ = gboml_model.solve_gurobi()
+        f.close()
+        sys.stdout = temp
+
+        self.assertFalse(quadratic_part.is_empty())
+        self.assertTrue(quadratic_part.has_quadratic_terms())
+        self.assertFalse(quadratic_part.is_convex())
+        self.assertEqual(quadratic_part.get_nb_constraints("eq"), 3)
+        self.assertAlmostEqual(objective, 15.0, places=4)
+
+    def test_quadratic_unsupported_solver(self):
+        """ test_quadratic_unsupported_solver
+
+        Tests that solving a graph holding a quadratic constraint with a
+        solver that does not support quadratic constraints aborts
+
+        """
+        import os
+        import sys
+        f = open(os.devnull, 'w')
+        temp = sys.stdout
+        sys.stdout = f
+
+        gboml_model = GbomlGraph(3)
+        nodes, edges, global_params = gboml_model.import_all_nodes_and_edges(
+            "test/test34_quadratic.txt")
+        gboml_model.add_nodes_in_model(*nodes)
+        gboml_model.add_hyperedges_in_model(*edges)
+        gboml_model.add_global_parameters(global_params)
+        gboml_model.build_model()
+        with self.assertRaises(SystemExit):
+            gboml_model.solve_clp()
+        f.close()
+        sys.stdout = temp
 
     def test_toy_example(self):
         """ test_toy_example

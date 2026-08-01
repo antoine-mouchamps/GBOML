@@ -1,0 +1,29 @@
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#VARIABLES
+external : a[T];
+#CONSTRAINTS
+lo_a: a[t] >= 0;
+up_a: a[t] <= 10;
+fix_a: a[t] == 3;
+#OBJECTIVES
+min cost_a: a[t];
+
+#NODE B
+#VARIABLES
+external : b[T];
+external : p[T];
+#CONSTRAINTS
+lo_b: b[t] >= 0;
+up_b: b[t] <= 10;
+fix_b: b[t] == 4;
+lo_p: p[t] >= 0;
+up_p: p[t] <= 100;
+#OBJECTIVES
+min cost_p: p[t];
+
+#HYPEREDGE H
+#CONSTRAINTS
+couple: B.p[t] == A.a[t] * B.b[t];

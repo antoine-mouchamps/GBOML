@@ -1,0 +1,18 @@
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+internal : y[T];
+internal : z[T];
+#CONSTRAINTS
+lo_x: x[t] >= 0;
+up_x: x[t] <= 5;
+lo_y: y[t] >= 0;
+up_y: y[t] <= 5;
+lo_z: z[t] >= 0;
+up_z: z[t] <= 100;
+dot: z[t] == sum(x[i]*y[i] for i in [0:t]);
+#OBJECTIVES
+min cost: z[t];

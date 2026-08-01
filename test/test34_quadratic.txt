@@ -1,0 +1,17 @@
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+internal : y[T];
+internal : z[T];
+#CONSTRAINTS
+lo_x: x[t] >= 1;
+up_x: x[t] <= 5;
+lo_y: y[t] >= 1;
+up_y: y[t] <= 5;
+total: x[t] + y[t] == 6;
+product: z[t] == x[t] * y[t];
+#OBJECTIVES
+min cost: z[t];

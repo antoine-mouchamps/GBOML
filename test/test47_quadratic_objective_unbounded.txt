@@ -1,0 +1,12 @@
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+#CONSTRAINTS
+lo_x: x[t] >= -3;
+#OBJECTIVES
+// x has no upper bound, which the spatial branching of a non convex objective
+// requires
+max cost: x[t]*x[t];

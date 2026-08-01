@@ -1,0 +1,21 @@
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#PARAMETERS
+N = 3;
+w = {2, 3, 4};
+#VARIABLES
+internal : x[N];
+internal : y[N];
+internal : z[T];
+#CONSTRAINTS
+lo_x: x[i] >= 0 for i in [0:N-1];
+up_x: x[i] <= 4 for i in [0:N-1];
+lo_y: y[i] >= 0 for i in [0:N-1];
+up_y: y[i] <= 4 for i in [0:N-1];
+fix_x: x[i] == i + 1 for i in [0:N-1];
+fix_y: y[i] == 2 for i in [0:N-1];
+dot: z[t] == sum(w[i]*x[i]*y[i] for i in [0:N-1]);
+#OBJECTIVES
+min cost: z[t];

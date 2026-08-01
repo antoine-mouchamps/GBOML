@@ -1,0 +1,14 @@
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+#CONSTRAINTS
+lo_x: x[t] >= -10;
+up_x: x[t] <= 10;
+sum_x: sum(x[i] for i in [0:T-1]) == 6;
+#OBJECTIVES
+// a sum of squares, hence convex : the minimum spreads the six evenly over
+// the three time steps, giving 3*2**2 == 12
+min cost: x[t]*x[t];

@@ -1,0 +1,13 @@
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+#CONSTRAINTS
+lo_x: x[t] >= -3;
+up_x: x[t] <= 3;
+#OBJECTIVES
+// maximising a sum of squares is not convex, it needs spatial branching and
+// therefore a bound on both sides of every variable of the product
+max cost: x[t]*x[t];

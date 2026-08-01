@@ -1,0 +1,12 @@
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+#CONSTRAINTS
+// a squared variable with a non negative coefficient below an upper bound is
+// convex, so no bound has to be written on x itself
+sq: x[t]*x[t] <= 4;
+#OBJECTIVES
+max cost: x[t];

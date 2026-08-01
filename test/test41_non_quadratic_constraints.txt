@@ -1,0 +1,17 @@
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+internal : z[T];
+#CONSTRAINTS
+lo_x: x[t] >= 0;
+up_x: x[t] <= 5;
+lo_z: z[t] >= 0;
+up_z: z[t] <= 100;
+// a variable in the exponent makes the constraint no polynomial of the
+// variables at all, it is rejected whatever the degree accepted
+exponential: z[t] == 2 ** x[t];
+#OBJECTIVES
+min cost: z[t];
