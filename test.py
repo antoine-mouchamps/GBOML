@@ -1251,6 +1251,27 @@ class CompilerTests(unittest.TestCase):
             # one row per time step, summed : 1 + 3 + 6 + 10
             self.assertAlmostEqual(solution["objective"], 20.0, places=4)
 
+    def test_single_row_sum_range(self):
+        """ test_single_row_sum_range
+
+        Tests a sum whose range ends on the index of the constraint over a
+        single time step. The index is then bound to an array holding one
+        value, which the range has to reduce to a plain integer before it can
+        be built
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test51_single_row_sum_range.txt', "--linprog",
+             "--json", "--output", "test/test51_single_row_sum_range"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test51_single_row_sum_range.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+            variables = solution["elements"]["A"]["variables"]
+            self.assertEqual(variables["z"]["values"], [1.0])
+
 
 class GBOMLpyTest(unittest.TestCase):
     """

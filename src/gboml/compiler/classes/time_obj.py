@@ -294,7 +294,7 @@ class TimeInterval:
 
         elif isinstance(value, np.ndarray):
             if value.size == 1:
-                value = int(value)
+                value = int(value.item())
 
         return value
 

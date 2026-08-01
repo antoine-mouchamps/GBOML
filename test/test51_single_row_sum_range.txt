@@ -1,0 +1,17 @@
+// A sum whose range ends on the index of the constraint, over a single time
+// step. The index is then bound to an array holding one value, which the range
+// has to reduce to a plain integer : sum(x[i] for i in [0:0]) == x[0] == 1
+#TIMEHORIZON
+T = 1;
+
+#NODE A
+#PARAMETERS
+N = 3;
+#VARIABLES
+internal : x[N];
+internal : z[T];
+#CONSTRAINTS
+fix_x : x[i] == i + 1 for i in [0:N-1];
+target: z[t] == sum(x[i] for i in [0:t]);
+#OBJECTIVES
+min c : z[t];
