@@ -825,6 +825,99 @@ class CompilerTests(unittest.TestCase):
         return_code = process.returncode
         self.assertEqual(return_code, 0)
 
+    def test_sum_ragged_range(self):
+        """ test_sum_ragged_range
+
+        Tests a sum whose range ends on the index of the constraint, so every
+        row holds a different number of terms. The rows which are shorter than
+        the longest one used to be dropped silently, see KNOWN_ISSUES.md.
+        The same sum is checked once more with a product of two variables in
+        it, to cover the case where a sum and a product are combined
+
+        """
+        variables = self.solve_sum_semantics("test48_sum_semantics", "ragged")
+        self.assertEqual(variables["z_ragged"]["values"],
+                         [1.0, 3.0, 6.0, 10.0])
+
+        quadratic = self.solve_sum_semantics(
+            "test49_sum_semantics_quadratic", "ragged")
+        self.assertEqual(quadratic["z_ragged"]["values"],
+                         [1.0, 3.0, 6.0, 10.0])
+
+    def test_sum_where_condition(self):
+        """ test_sum_where_condition
+
+        Tests a sum filtered by a where condition. The condition used to be
+        ignored whenever the expression held a product of two variables, see
+        KNOWN_ISSUES.md
+
+        """
+        variables = self.solve_sum_semantics("test48_sum_semantics", "cond")
+        self.assertEqual(variables["z_cond"]["values"],
+                         [8.0, 8.0, 8.0, 8.0])
+
+    def test_sum_ragged_range_with_condition(self):
+        """ test_sum_ragged_range_with_condition
+
+        Tests a filtered sum over a range which depends on the index of the
+        constraint, the case where the rows have to stay rectangular once the
+        condition has dropped entries
+
+        """
+        variables = self.solve_sum_semantics("test48_sum_semantics",
+                                             "ragged_cond")
+        self.assertEqual(variables["z_ragged_cond"]["values"],
+                         [1.0, 1.0, 4.0, 8.0])
+
+    def test_nested_sum(self):
+        """ test_nested_sum
+
+        Tests a sum inside a sum, the inner range depending on the outer index.
+        This used to crash the linear factorization outright, see
+        KNOWN_ISSUES.md. Checked once more with a product inside
+
+        """
+        variables = self.solve_sum_semantics("test48_sum_semantics", "nested")
+        self.assertEqual(variables["z_nested"]["values"],
+                         [10.0, 10.0, 10.0, 10.0])
+
+        quadratic = self.solve_sum_semantics(
+            "test49_sum_semantics_quadratic", "nested")
+        self.assertEqual(quadratic["z_nested"]["values"],
+                         [10.0, 10.0, 10.0, 10.0])
+
+    def test_nested_sum_ragged_range(self):
+        """ test_nested_sum_ragged_range
+
+        Tests a sum inside a sum whose outer range depends on the index of the
+        constraint, so both kinds of range are ragged at once
+
+        """
+        variables = self.solve_sum_semantics("test48_sum_semantics",
+                                             "nested_ragged")
+        self.assertEqual(variables["z_nested_ragged"]["values"],
+                         [1.0, 4.0, 10.0, 20.0])
+
+    def test_sum_in_objective_ragged_range(self):
+        """ test_sum_in_objective_ragged_range
+
+        Tests a sum in an objective whose range depends on the index the
+        objective is expanded over. The index appearing only in the range of
+        the sum used to leave the objective on a single row
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test50_sum_in_objective.txt', "--gurobi", "--json",
+             "--output", "test/test50_sum_in_objective"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test50_sum_in_objective.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+            # one row per time step, summed : 1 + 3 + 6 + 10
+            self.assertAlmostEqual(solution["objective"], 20.0, places=4)
+
 
 class GBOMLpyTest(unittest.TestCase):
     """

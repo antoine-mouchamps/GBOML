@@ -1,0 +1,27 @@
+// The same sums with every variable multiplied by u, pinned to one, so that
+// the very same expressions carry a product of two variables and go through
+// the quadratic part of the factorization. The values must not change.
+#TIMEHORIZON
+T = 4;
+
+#NODE A
+#PARAMETERS
+N = 4;
+#VARIABLES
+internal : x[N];
+internal : u;
+internal : z_ragged[T];
+internal : z_nested[T];
+#CONSTRAINTS
+fix_x  : x[i] == i + 1 for i in [0:N-1];
+fix_u  : u == 1;
+// a product of two distinct variables is never recognised as convex, so both
+// of them have to be bounded on each side
+lo_x   : x[i] >= 0   for i in [0:N-1];
+up_x   : x[i] <= 100 for i in [0:N-1];
+lo_u   : u >= 0;
+up_u   : u <= 10;
+ragged : z_ragged[t] == sum(x[i]*u for i in [0:t]);
+nested : z_nested[t] == sum(sum(x[j]*u for j in [0:i]) for i in [0:2]);
+#OBJECTIVES
+min c : z_ragged[t];
