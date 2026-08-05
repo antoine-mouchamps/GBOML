@@ -27,12 +27,12 @@ class Constraint(Type):
             "Internal error: expected string for Constraint type"
         assert c_type in ["==", "<=", ">="], \
             "Internal error: unknown type for constraint"
-        assert type(rhs) == Expression, \
-            "Internal error: expected Expression type for " \
-            "right hand side in Constraint"
-        assert type(rhs) == Expression, "Internal error: expected " \
-                                        "Expression type " \
-                                        "for left hand side in Constraint"
+        assert type(rhs) == Expression, (
+            "Internal error: expected Expression type for right hand side in Constraint"
+        )
+        assert type(lhs) == Expression, (
+            "Internal error: expected Expression type for left hand side in Constraint"
+        )
         assert time_interval is None or type(time_interval) == TimeInterval, \
             "Internal error: expected TimeInterval object in Constraint"
         assert condition is None or type(condition) == Condition, \
