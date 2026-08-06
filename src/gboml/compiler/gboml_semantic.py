@@ -244,7 +244,7 @@ def change_node_names_in_edge(edge, names_changes):
                             changes_dictionary[current_node_name])
 
 
-def check_program_linearity(program, variables, definitions):
+def check_program_degrees(program, variables, definitions):
     definition_accumulator_dict = \
         {"T": definitions["T"], "global": definitions["global"]}
     nodes = program.get_nodes()
@@ -339,7 +339,6 @@ def check_expressions_dependency_link(link: Hyperedge,
                                       parameters_obj: dict):
     constraints = link.get_constraints()
     for cons in constraints:
-
         rhs = cons.get_rhs()
         lhs = cons.get_lhs()
 
@@ -347,10 +346,13 @@ def check_expressions_dependency_link(link: Hyperedge,
         var_in_left = predicate_variables_in_expression(lhs, variables)
 
         if var_in_right is False and var_in_left is False:
-            error_('No variable in constraint at line ' + str(cons.get_line()))
+            error_("No variable in constraint at line " + str(cons.get_line()))
 
-        check_linear(rhs, variables, parameters_obj)
-        check_linear(lhs, variables, parameters_obj)
+        degree = max(
+            expression_degree(rhs, variables, parameters_obj),
+            expression_degree(lhs, variables, parameters_obj),
+        )
+        cons.set_quadratic(degree == 2)
 
 
 def check_expressions_dependency(node: Node,
@@ -365,7 +367,6 @@ def check_expressions_dependency(node: Node,
     """
     constraints = node.get_constraints()
     for cons in constraints:
-
         rhs = cons.get_rhs()
         lhs = cons.get_lhs()
 
@@ -373,31 +374,62 @@ def check_expressions_dependency(node: Node,
         var_in_left = predicate_variables_in_expression(lhs, variables)
 
         if var_in_right is False and var_in_left is False:
-            error_('No variable in constraint at line ' + str(cons.get_line()))
+            error_("No variable in constraint at line " + str(cons.get_line()))
 
-        check_linear(rhs, variables, parameters_obj)
-        check_linear(lhs, variables, parameters_obj)
+        degree = max(
+            expression_degree(rhs, variables, parameters_obj),
+            expression_degree(lhs, variables, parameters_obj),
+        )
+        cons.set_quadratic(degree == 2)
 
     objectives = node.get_objectives()
     for obj in objectives:
-
-        expr = obj.get_expression()
-
-        contains_var = predicate_variables_in_expression(expr, variables)
-
-        check_linear(expr, variables, parameters_obj)
+        degree = expression_degree(obj.get_expression(), variables, parameters_obj)
+        obj.set_quadratic(degree == 2)
 
 
-def check_linear(expression: Expression,
-                 variables: dict,
-                 parameters: dict) -> bool:
+def degree_error(e_type: str, degree: int, children: list):
     """
-    check_linear function : checks if an expression is linear with respect
-                            with respect to the variables
+    degree_error function : reports an operation building a term of a degree
+                            higher than the highest degree accepted
+    INPUT:  e_type -> type of the operation
+            degree -> degree the operation leads to
+            children -> children of the operation
+    OUTPUT: None, exits
+    """
+
+    error_(
+        "Operation '"
+        + str(e_type)
+        + "' leading to a term of degree "
+        + str(degree)
+        + " at line "
+        + str(children[0].get_line())
+        + ", only terms of degree at most "
+        + str(2)
+        + " with respect to the variables are accepted\n"
+        + "Namely Expression 1 : "
+        + str(children[0])
+        + " and Expression 2 : "
+        + str(children[1])
+    )
+
+
+def expression_degree(expression: Expression, variables: dict, parameters: dict) -> int:
+    """
+    expression_degree function : returns the degree of an expression with
+                                 respect to the variables it involves, zero for
+                                 an expression built out of parameters only,
+                                 one for a linear expression and two for a
+                                 quadratic one. A term of a higher degree, a
+                                 variable in a denominator, in an exponent or
+                                 under a modulo are all reported as errors,
+                                 none of them being expressible as a quadratic
+                                 problem.
     INPUT:  expression -> expression object to check
             variables -> dictionary of <name,identifier> objects
             parameters -> dictionary of <name,array> objects
-    OUTPUT: bool -> boolean value if it depends on a variable
+    OUTPUT: int -> degree of the expression, between zero and 2
     """
 
     e_type = expression.get_type()
@@ -412,18 +444,16 @@ def check_linear(expression: Expression,
                 "have zero child, got "
                 + str(nb_child) +
                 " check internal parser")
+        degree = 0
+        if predicate_variables_in_expression(expression, variables):
+            degree = 1
     elif e_type == 'u-':
         if nb_child != 1:
             error_("INTERNAL ERROR : unary minus operator "
                    "must have one child, got "
                    + str(nb_child) +
                    " check internal parser")
-        lin1 = check_linear(children[0], variables, parameters)
-        if lin1 is False:
-            error_("Non linearity in expression : "
-                   + str(children[0])
-                   + " only linear problems are accepted at line "
-                   + str(children[0].get_line()))
+        degree = expression_degree(children[0], variables, parameters)
     elif e_type == 'sum':
 
         if nb_child != 1:
@@ -436,12 +466,8 @@ def check_linear(expression: Expression,
                    + str(expression.get_line()))
         parameters[time_var] = None
 
-        lin1 = check_linear(children[0], variables, parameters)
+        degree = expression_degree(children[0], variables, parameters)
         parameters.pop(time_var)
-        if lin1 is False:
-            error_("Non linearity in expression : " + str(children[0])
-                   + " only linear problems are accepted at line "
-                   + str(children[0].get_line()))
     else:
 
         if nb_child != 2:
@@ -449,67 +475,58 @@ def check_linear(expression: Expression,
                    "must have two children, got "
                    + str(nb_child) +
                    " check internal parser")
-        term1 = predicate_variables_in_expression(children[0], variables)
-        term2 = predicate_variables_in_expression(children[1], variables)
-        if e_type == "-" or e_type == '+':
+        degree1 = expression_degree(children[0], variables, parameters)
+        degree2 = expression_degree(children[1], variables, parameters)
 
-            if term1 is True:
-
-                lin1 = check_linear(children[0], variables, parameters)
-                if lin1 is False:
-                    error_("Non linearity in expression : " + str(children[0]) +
-                           " only linear problems are accepted at line "
-                           + str(children[0].get_line()))
-            if term2 is True:
-
-                lin2 = check_linear(children[1], variables, parameters)
-                if lin2 is False:
-                    error_("Non linearity in expression : " + str(children[1]) +
-                           " only linear problems are accepted at line "
-                           + str(children[0].get_line()))
-        elif e_type == "*" or e_type == "/":
-
-            if term2 is True and term1 is True:
-                string = "Operation '" + str(e_type) + \
-                         "' between two expressions containing " \
-                         "variables leading to a non linearity at line " \
-                         + str(children[0].get_line()) + "\n"
-                string += "Namely Expression 1 : " + str(children[0]) \
-                          + " and Expression 2 : " + str(children[1])
-                error_(string)
-            if term2 is True and e_type == "/":
-                string = "A variable in the denominator of " \
-                         "a division leads to a Non linearity at line " \
-                         + str(children[0].get_line())
-                error_(string)
-            if term1 is True:
-
-                lin1 = check_linear(children[0], variables, parameters)
-                if lin1 is False:
-                    error_("Non linearity in expression : " + str(children[0]) +
-                           " only linear problems are accepted at line "
-                           + str(children[0].get_line()))
+        if e_type == "+" or e_type == "-":
+            degree = max(degree1, degree2)
+        elif e_type == "*":
+            degree = degree1 + degree2
+            if degree > 2:
+                degree_error(e_type, degree, children)
+        elif e_type == "/":
+            if degree2 > 0:
+                error_(
+                    "A variable in the denominator of a division is not "
+                    "allowed at line " + str(children[0].get_line())
+                )
+            degree = degree1
         elif e_type == "**":
-
-            if term1 is True or term2 is True:
-                string = "Operation '" + str(e_type) + \
-                         "' between one expression containing variables " \
-                         "leading to a non linearity at line " \
-                         + str(children[0].get_line()) + "\n"
-                string += "Namely Expression 1 : " + str(children[0]) \
-                          + " and Expression 2 : " + str(children[1])
-                error_(string)
+            if degree2 > 0:
+                error_(
+                    "A variable in the exponent of a power operation is "
+                    "not allowed at line " + str(children[0].get_line())
+                )
+            degree = 0
+            if degree1 > 0:
+                exponent = children[1].evaluate_as_constant_integer(parameters)
+                if exponent is None or exponent < 0:
+                    error_(
+                        "The exponent of an expression containing "
+                        "variables must be a non negative constant integer "
+                        "at line "
+                        + str(children[0].get_line())
+                        + "\nNamely Expression : "
+                        + str(children[1])
+                    )
+                degree = degree1 * exponent
+                if degree > 2:
+                    degree_error(e_type, degree, children)
         elif e_type == "mod":
-
-            string = "Non linearity, modulo operator is " \
-                     "not allowed on variables at line " \
-                     + str(children[0].get_line()) + "\n"
-            error_(string)
+            if degree1 > 0 or degree2 > 0:
+                error_(
+                    "The modulo operator is not allowed on variables at "
+                    "line " + str(children[0].get_line())
+                )
+            degree = 0
         else:
+            error_(
+                "INTERNAL ERROR : unknown type '"
+                + str(e_type)
+                + "' check internal parser"
+            )
 
-            error_("INTERNAL ERROR : unknown type '"
-                   + str(e_type) + "' check internal parser")
-    return True
+    return degree
 
 
 def check_mdp(program, variables: dict, definitions: dict):

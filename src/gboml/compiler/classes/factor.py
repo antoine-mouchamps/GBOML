@@ -4,18 +4,20 @@
 # Licensed under the MIT License (see LICENSE file).
 
 """
-factorization.py : turns a constraint or an objective into the rows of the
-problem.
+factor.py : turns a constraint or an objective into the rows of the
+problem, whatever its degree with respect to the variables.
 
 The expression is compiled once, index free, into a tree of nodes, and
 every node knows how to evaluate itself into a Block. The rules are the
-algebra of affine expressions:
+algebra of polynomials:
 
     constant     a subtree holding no variable, evaluated whole
     variable     one column of the problem
     - and +      the terms of both sides, gathered
-    *            a scaling, one of the two sides holding no variable
+    *            the degrees add up, the degree two part being the outer
+                 product of the degree one parts
     /            a scaling, the denominator holding no variable
+    **           repeated multiplication, the exponent being a constant integer
     sum          the enclosed terms, widened over the range of the sum
 
 Terms landing on the same row are summed by the matrix, so a sum only has to
@@ -30,25 +32,48 @@ every variable index landed in bounds, so they do not invalidate their row.
 """
 
 import numpy as np  # type: ignore
-from scipy.sparse import coo_matrix  # type: ignore
+from scipy.sparse import coo_array  # type: ignore
 
 from gboml.compiler.utils import error_
 from .block import (
     Block,
     LinearTerm,
     add_blocks,
+    multiply_blocks,
     as_rows,
     as_column,
     materialize,
     combine_valid,
-    flatten_linear,
     is_scalar,
 )
 from .constraint import Constraint
 from .expression import Expression
 from .identifier import Identifier
 from .objective import Objective
-from .block import ByteArray, __f_index2__
+
+
+class ByteArray:
+    __slots__ = ("array",)
+
+    def __init__(self, length):
+        self.array = np.ones(length, dtype=bool)
+
+    def intersect_inplace(self, values):
+        self.array = self.array & values
+
+
+def __f_index2__(expr, all_index, name):
+    max_length = len(name)
+    is_in = np.array(((0 <= expr) & (expr < max_length)), dtype=bool)
+    all_index.intersect_inplace(is_in)
+    expr = np.array(expr, dtype=int)
+
+    if not is_in.all():
+        return_value = np.array(name[np.clip(expr, 0, max_length - 1)], dtype=float)
+    else:
+        return_value = np.array(name[expr], dtype=float)
+
+    return return_value
 
 
 def is_index_dependant_expression(expression, index) -> bool:
@@ -257,17 +282,14 @@ class MultiplicationNode(Node):
 
         left = self.left.evaluate(context)
         right = self.right.evaluate(context)
-        # check_linear refuses a product of two expressions holding variables,
-        # so one of the two sides is a coefficient and the product is a scaling
-        if left.is_constant():
-            return right.scaled(left.constant).also_valid(left.valid)
-        if right.is_constant():
-            return left.scaled(right.constant).also_valid(right.valid)
+        if left.degree() + right.degree() > 2:
+            error_(
+                "INTERNAL ERROR : a product of degree "
+                + str(left.degree() + right.degree())
+                + " reached the factorization, check the semantic analysis"
+            )
 
-        error_(
-            "INTERNAL ERROR : a product of two expressions holding variables "
-            "reached the factorization, check the semantic analysis"
-        )
+        return multiply_blocks(left, right)
 
 
 class DivisionNode(Node):
@@ -287,6 +309,30 @@ class DivisionNode(Node):
         denominator = self.denominator.evaluate(context)
 
         return numerator.scaled(1.0 / denominator.constant)
+
+
+class PowerNode(Node):
+    """A variable expression raised to a constant non negative integer, small
+    enough for the result to stay of degree two."""
+
+    __slots__ = ("child", "exponent")
+
+    def __init__(self, child, exponent):
+
+        self.child = child
+        self.exponent = exponent
+
+    def evaluate(self, context) -> Block:
+
+        if self.exponent == 0:
+            return Block(context.nb_rows, 1.0)
+
+        block = self.child.evaluate(context)
+        result = block
+        for _ in range(self.exponent - 1):
+            result = multiply_blocks(result, block)
+
+        return result
 
 
 class SumNode(Node):
@@ -426,15 +472,12 @@ class SumNode(Node):
             constant = constant * nb_cells
 
         linear = [
-            self.fold_term(
-                term,
-                nb_rows,
-                nb_cells,
-                flat_padding,
-                has_padding,
-                ["values", "columns"],
-            )
+            self.fold_term(term, nb_rows, nb_cells, flat_padding, has_padding)
             for term in block.linear
+        ]
+        quadratic = [
+            self.fold_term(term, nb_rows, nb_cells, flat_padding, has_padding)
+            for term in block.quadratic
         ]
         valid = block.valid
         if valid is not None:
@@ -443,10 +486,11 @@ class SumNode(Node):
             if valid.all():
                 valid = None
 
-        return Block(nb_rows, constant, linear, valid)
+        return Block(nb_rows, constant, linear, quadratic, valid)
 
-    def fold_term(self, term, nb_rows, nb_cells, flat_padding, has_padding, fields):
+    def fold_term(self, term, nb_rows, nb_cells, flat_padding, has_padding):
 
+        fields = ["values"] + list(type(term).COLUMN_FIELDS)
         width = nb_cells * term.width
         inner_rows = nb_rows * nb_cells
         values = term.values
@@ -532,7 +576,7 @@ def build_node(expression, variables, constants, collected_variables):
         return NegationNode(sub_nodes[0][0]), True
 
     if e_type == "+" or e_type == "-":
-        return AdditionNode(flatten_addition(expression, sub_nodes, e_type)), True
+        return AdditionNode(_flatten_addition(sub_nodes, e_type)), True
 
     if e_type == "*":
         return MultiplicationNode(sub_nodes[0][0], sub_nodes[1][0]), True
@@ -540,18 +584,29 @@ def build_node(expression, variables, constants, collected_variables):
     if e_type == "/":
         return DivisionNode(sub_nodes[0][0], sub_nodes[1][0]), True
 
+    if e_type == "**":
+        exponent = children[1].evaluate_as_constant_integer(constants)
+        if exponent is None or exponent < 0:
+            error_(
+                "INTERNAL ERROR : the exponent at line "
+                + str(expression.get_line())
+                + " is not a constant non "
+                "negative integer, check the semantic analysis"
+            )
+
+        return PowerNode(sub_nodes[0][0], exponent), True
+
     error_(
         "The operator '" + str(e_type) + "' is not allowed on variables at "
         "line " + str(expression.get_line())
     )
 
 
-def flatten_addition(expression, sub_nodes, e_type):
+def _flatten_addition(sub_nodes, e_type):
     """
-    flatten_addition function : gathers a run of + and - into one list of
+    _flatten_addition function : gathers a run of + and - into one list of
     signed operands, so that a long sum of terms is concatenated once
-    INPUT:  expression -> Expression object of the addition
-            sub_nodes -> the compiled children with their variable predicate
+    INPUT:  sub_nodes -> the compiled children with their variable predicate
             e_type -> '+' or '-'
     OUTPUT: list of [sign, Node]
     """
@@ -571,16 +626,92 @@ def flatten_addition(expression, sub_nodes, e_type):
     return flattened
 
 
+def gather_nonzero_terms(terms, valid, rows, block_nb_rows):
+    """
+    gather_nonzero_terms function : turns a list of terms into a flat
+    arrays, keeping
+    only the entries whose value is not zero.
+
+    Terms are handled one at a time. For each term, its values are turned into
+    a (row, entry) rectangle first and reduced to the positions that are not
+    zero; the term's columns are then read only at those same positions.
+    INPUT:  terms -> non empty list of LinearTerm or QuadraticTerm objects
+            valid -> ndarray, the rows to keep
+            rows -> ndarray, the row number each kept entry lands on, one
+                    entry per row valid keeps
+            block_nb_rows -> number of rows the terms were evaluated at,
+                             before valid narrows them down -- the shape valid
+                             itself indexes against
+    OUTPUT: the rows array, then the values and one array per column of the
+            term type, all of the same length -- one entry per kept
+            (row, term-column) pair
+    """
+
+    fields = [("values", float)] + [
+        (name, int) for name in type(terms[0]).COLUMN_FIELDS
+    ]
+    keep_every_row = bool(valid.all())
+    gathered = [[np.zeros(0, dtype=int)]] + [
+        [np.zeros(0, dtype=dtype)] for _, dtype in fields
+    ]
+
+    def entries(term, name, dtype):
+        rectangle = materialize(
+            getattr(term, name), block_nb_rows, term.width, dtype=dtype
+        )
+
+        return rectangle if keep_every_row else rectangle[valid]
+
+    for term in terms:
+        values = entries(term, *fields[0])
+        kept_rows, kept_entries = np.nonzero(values)
+        if len(kept_entries) == 0:
+            continue
+
+        gathered[0].append(rows[kept_rows])
+        gathered[1].append(values[kept_rows, kept_entries])
+        for index, field in enumerate(fields[1:], start=2):
+            gathered[index].append(entries(term, *field)[kept_rows, kept_entries])
+
+    return tuple(np.concatenate(arrays) for arrays in gathered)
+
+
+def build_sparse_array(terms, valid, rows, nb_rows, block_nb_rows):
+    """
+    build_sparse_array function : build the terms of a block as a coo_array
+    whose first axis is the row and whose other axes are the term's own
+    COLUMN_FIELDS. Entries at the same (row, *columns) tuple in more than
+    one term are summed and cancelled by sum_duplicates/eliminate_zeros.
+    INPUT:  terms -> list of LinearTerm or QuadraticTerm objects
+            valid, rows, nb_rows, block_nb_rows
+    OUTPUT: coo_array of shape (nb_rows, *ncols), or None when `terms` is empty
+    """
+
+    if not terms:
+        return None
+
+    term_rows, values, *columns = gather_nonzero_terms(
+        terms, valid, rows, block_nb_rows
+    )
+    if len(columns) == 2:
+        # a product is commutative so x * y and y * x are the very same entry.
+        columns = [np.minimum(*columns), np.maximum(*columns)]
+    # indices are never negative, so a column's max is its ncols - 1
+    # whenever it holds any, and the initial floor of 0 gives ncols = 1 when it
+    # does not
+    shape = (nb_rows,) + tuple(int(column.max(initial=0)) + 1 for column in columns)
+    sparse = coo_array((values, (term_rows, *columns)), shape=shape)
+    sparse.sum_duplicates()
+    sparse.eliminate_zeros()
+
+    return sparse
+
+
 class Factorize:
     """
     Factorize object factorizes a constraint or an objective of any
     degree accepted by the language, that is zero, one or two with respect to
     the variables.
-
-    factorize_* compiles the expression once, index free. extend binds the
-    index of the constraint to every row at once and evaluates the compiled
-    tree into a Block, from which the sparse matrix, the independent terms and,
-    when there are any, the products of two variables are read off.
     """
 
     def __init__(self, obj):
@@ -591,9 +722,11 @@ class Factorize:
         self.variables = []
         self.line = obj.get_line()
         self.type_fact = "objective" if type(obj) == Objective else "constraint"
+        self.is_quadratic = False
         self.extension_type = ""
         self.sparse = None
         self.independent_terms = []
+        self.quadratic_terms = None
 
     def get_name(self):
 
@@ -616,6 +749,20 @@ class Factorize:
 
         self.sparse = None
         self.independent_terms = None
+        self.quadratic_terms = None
+
+    def has_variables(self) -> bool:
+        return bool(self.variables)
+
+    def nb_rows(self) -> int:
+        """
+        nb_rows function : the number of rows the factor expanded to. Every
+        degree lands in those same rows, and every one of them carries an
+        independent term, so counting them is counting the rows.
+        OUTPUT: int
+        """
+
+        return len(self.independent_terms)
 
     def factorize_constraint(self, variables, constants):
         """
@@ -633,6 +780,7 @@ class Factorize:
             constraint.get_rhs(), variables, constants, self.variables
         )
         self.node = AdditionNode([[1, left], [-1, right]])
+        self.is_quadratic = constraint.is_quadratic()
 
     def factorize_objective(self, variables, constants):
         """
@@ -647,6 +795,7 @@ class Factorize:
         self.node, _ = build_node(
             objective.get_expression(), variables, constants, self.variables
         )
+        self.is_quadratic = objective.is_quadratic()
 
     def row_range(self, gl):
         """
@@ -721,7 +870,11 @@ class Factorize:
         gl[name_index] = index_values
 
         if nb_rows == 0:
-            self.set_empty()
+            # a part is None exactly when it holds no entry, which is what
+            # build_sparse_array returns for a degree the block never met
+            self.sparse = None
+            self.quadratic_terms = None
+            self.independent_terms = np.zeros(0)
 
             return
 
@@ -749,16 +902,14 @@ class Factorize:
                 "equal to %s"
                 % (str(obj), str(obj.get_line()), str(name_index), dropped)
             )
-            self.set_empty()
+            self.sparse = None
+            self.quadratic_terms = None
+            self.independent_terms = np.zeros(0)
 
             return
 
         self.gather(block, valid)
 
-    def set_empty(self):
-
-        self.sparse = None
-        self.independent_terms = []
 
     def gather(self, block, valid):
         """
@@ -785,34 +936,9 @@ class Factorize:
         else:
             self.independent_terms = constant
 
-        self.sparse = self.build_sparse(block, valid, rows, nb_rows)
-
-        if self.sparse is None and self.type_fact == "constraint":
-            # a constraint always holds a variable, the semantic analysis
-            # refuses one which does not
-            self.sparse = coo_matrix(
-                (np.zeros(0), (np.zeros(0), np.zeros(0))), shape=(nb_rows, 1)
-            )
-
-    def build_sparse(self, block, valid, rows, nb_rows):
-        """
-        build_sparse function : the degree one part of every row, as a sparse
-        matrix. Entries of a same row landing on a same column are summed,
-        which is how the terms of a sum add up.
-        """
-
-        if not block.linear:
-            return None
-
-        values, columns = flatten_linear(block)
-        values = values[valid]
-        columns = columns[valid]
-        width = values.shape[1]
-        sparse = coo_matrix(
-            (values.reshape(-1), (np.repeat(rows, width), columns.reshape(-1))),
-            shape=(nb_rows, int(columns.max()) + 1),
+        self.sparse = build_sparse_array(
+            block.linear, valid, rows, nb_rows, block.nb_rows
         )
-        sparse.sum_duplicates()
-        sparse.eliminate_zeros()
-
-        return sparse
+        self.quadratic_terms = build_sparse_array(
+            block.quadratic, valid, rows, nb_rows, block.nb_rows
+        )

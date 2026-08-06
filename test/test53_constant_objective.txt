@@ -1,0 +1,14 @@
+// An objective built out of parameters only, alongside one holding a
+// variable. It holds no row of the objective matrix and only shifts the
+// optimum by 0 + 1 + 2 == 3, on top of the 3 the first objective reaches.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+#CONSTRAINTS
+fix : x[t] == 1;
+#OBJECTIVES
+min c : x[t];
+min d : t;

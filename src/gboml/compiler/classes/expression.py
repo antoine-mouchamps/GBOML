@@ -285,6 +285,33 @@ class Expression(Symbol):
 
         return expr
 
+    def evaluate_as_constant_integer(self, definitions: dict):
+        """
+        evaluate_as_constant_integer function : evaluates the expression and
+                                                returns None whenever it can
+                                                not be reduced to a single
+                                                constant integer
+        INPUT:  definitions -> dictionary of <name,array> objects
+        OUTPUT: int -> value of the expression, or None
+        """
+
+        try:
+            # evaluate_expression calls error_ whenever a name can not be
+            # resolved, which exits, hence catching BaseException here to
+            # report the problem as a non constant value rather than as a
+            # missing definition
+            value = self.evaluate_expression(definitions)
+        except BaseException:
+            return None
+
+        if type(value) == float and value.is_integer():
+            value = int(value)
+
+        if type(value) != int:
+            return None
+
+        return value
+
     def evaluate_expression(self, definitions: dict):
 
         # Get type, children and nb_children

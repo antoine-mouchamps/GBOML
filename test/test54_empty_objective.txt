@@ -1,0 +1,14 @@
+// An objective whose `where` condition keeps no index at all. It expands to
+// no row and contributes nothing, the optimum being the 3 the first
+// objective reaches.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+#CONSTRAINTS
+fix : x[t] == 1;
+#OBJECTIVES
+min c : x[t];
+min d : x[i] for i in [0:T-1] where i > 100;

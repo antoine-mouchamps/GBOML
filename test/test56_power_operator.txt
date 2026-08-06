@@ -1,0 +1,32 @@
+// The ** operator applied to an expression holding a variable. Only the
+// exponent is a constant, and it is resolved at compile time, PowerNode
+// unrolling into that many multiplications -- so it is read from the
+// expression of the exponent alone, never from the whole power expression,
+// whose base does hold a variable and can not be evaluated at all.
+//
+// Every exponent below is written in a different shape : a bare parameter, a
+// literal, an expression over the horizon, and the two degenerate cases 0 and
+// 1 which produce no product at all. x is pinned by an equality, so every
+// result is a number a wrong exponent would get wrong rather than a shape.
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#PARAMETERS
+n = 2;
+#VARIABLES
+internal : x[T];
+internal : by_parameter[T];
+internal : by_literal[T];
+internal : by_horizon[T];
+internal : by_zero[T];
+internal : by_one[T];
+#CONSTRAINTS
+fix_x        : x[t] == t + 2;              // x == [2, 3]
+def_param    : by_parameter[t] == x[t]**n;      // [4, 9]
+def_literal  : by_literal[t] == x[t]**2;        // [4, 9]
+def_horizon  : by_horizon[t] == x[t]**(T-1);    // T-1 == 1, so [2, 3]
+def_zero     : by_zero[t] == x[t]**0;           // [1, 1]
+def_one      : by_one[t] == x[t]**1;            // [2, 3]
+#OBJECTIVES
+min cost: by_parameter[t];                 // 4 + 9 == 13

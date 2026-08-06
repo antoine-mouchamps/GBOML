@@ -22,9 +22,18 @@ Several other options exists and can be retrieved by writing :
   python main.py -h
 """
 
-from .compiler import compile_gboml
-from .solver_api import scipy_solver, clp_solver, cplex_solver, \
-    gurobi_solver, xpress_solver, dsp_solver, highs_solver, cbc_solver
+from .compiler import compile_gboml, has_quadratic_terms
+from .solver_api import (
+    scipy_solver,
+    clp_solver,
+    cplex_solver,
+    gurobi_solver,
+    xpress_solver,
+    dsp_solver,
+    highs_solver,
+    cbc_solver,
+    supports_quadratic,
+)
 from .output import generate_json, generate_list_values_tuple, write_csv
 
 import argparse
@@ -108,9 +117,23 @@ def main():
             print("The number of processes must be strictly positive")
             exit()
 
-        program, A_eq, b_eq, A_ineq, b_ineq, C, indep_terms_c, alone_term_c, T, name_tuples = \
-            compile_gboml(args.input_file, args.log, args.lex,
-                          args.parse, args.nb_processes)
+        (
+            program,
+            A_eq,
+            b_eq,
+            quadratic_eq,
+            A_ineq,
+            b_ineq,
+            quadratic_ineq,
+            C,
+            indep_terms_c,
+            quadratic_objective,
+            alone_term_c,
+            T,
+            name_tuples,
+        ) = compile_gboml(
+            args.input_file, args.log, args.lex, args.parse, args.nb_processes
+        )
 
         print("All --- %s seconds ---" % (time() - start_time))
         C_sum = np.asarray(C.sum(axis=0), dtype=float)
@@ -129,71 +152,239 @@ def main():
         constraints_additional_information = dict()
         variables_additional_information = dict()
 
+        chosen_solver = None
+        for selected, solver_function in [
+            [args.linprog, scipy_solver],
+            [args.clp, clp_solver],
+            [args.cbc, cbc_solver],
+            [args.cplex_benders, cplex_solver],
+            [args.cplex, cplex_solver],
+            [args.gurobi, gurobi_solver],
+            [args.xpress, xpress_solver],
+            [args.dsp_dw, dsp_solver],
+            [args.dsp_de, dsp_solver],
+            [args.highs, highs_solver],
+        ]:
+            if selected:
+                chosen_solver = solver_function
+                break
+
+        if has_quadratic_terms(
+            quadratic_eq, quadratic_ineq, quadratic_objective
+        ) and not supports_quadratic(chosen_solver):
+            quadratic_solvers = [
+                name
+                for name, solver_function in [
+                    ["--gurobi", gurobi_solver],
+                    ["--cplex", cplex_solver],
+                    ["--xpress", xpress_solver],
+                ]
+                if supports_quadratic(solver_function)
+            ]
+            print(
+                "The solver chosen does not support the constraints and "
+                "objectives holding a product of two variables, "
+                "please use one of " + ", ".join(quadratic_solvers)
+            )
+            exit(-1)
+
         if args.linprog:
 
-            x, objective, status, solver_info = \
-                scipy_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples)
+            x, objective, status, solver_info = scipy_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+            )
         elif args.clp:
 
-            x, objective, status, solver_info, constraints_additional_information = \
-                clp_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                           details=args.detailed)
+            x, objective, status, solver_info, constraints_additional_information = (
+                clp_solver(
+                    A_eq,
+                    b_eq,
+                    quadratic_eq,
+                    A_ineq,
+                    b_ineq,
+                    quadratic_ineq,
+                    C_sum,
+                    objective_offset,
+                    quadratic_objective,
+                    name_tuples,
+                    details=args.detailed,
+                )
+            )
         elif args.cbc:
 
-            x, objective, status, solver_info = \
-                cbc_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                           solver_lib=args.solver_lib)
+            x, objective, status, solver_info = cbc_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+                solver_lib=args.solver_lib,
+            )
 
         elif args.cplex_benders:
             struct_eq, struct_ineq = program.get_first_level_constraints_decomposition()
-            x, objective, status, solver_info, \
-             constraints_additional_information, \
-             variables_additional_information = \
-                cplex_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                             opt_file=args.opt, structure_indexes_eq=struct_eq,
-                             structure_indexes_ineq=struct_ineq, details=args.detailed)
+            (
+                x,
+                objective,
+                status,
+                solver_info,
+                constraints_additional_information,
+                variables_additional_information,
+            ) = cplex_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+                opt_file=args.opt,
+                structure_indexes_eq=struct_eq,
+                structure_indexes_ineq=struct_ineq,
+                details=args.detailed,
+            )
 
         elif args.cplex:
-            x, objective, status, solver_info, \
-             constraints_additional_information, \
-             variables_additional_information = \
-             cplex_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                          args.opt, details=args.detailed)
+            (
+                x,
+                objective,
+                status,
+                solver_info,
+                constraints_additional_information,
+                variables_additional_information,
+            ) = cplex_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+                args.opt,
+                details=args.detailed,
+            )
 
         elif args.gurobi:
 
-            x, objective, status, solver_info, \
-             constraints_additional_information, \
-             variables_additional_information = \
-             gurobi_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                           args.opt, args.detailed)
+            (
+                x,
+                objective,
+                status,
+                solver_info,
+                constraints_additional_information,
+                variables_additional_information,
+            ) = gurobi_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+                args.opt,
+                args.detailed,
+            )
 
         elif args.xpress:
 
-            x, objective, status, solver_info, \
-             constraints_additional_information, \
-             variables_additional_information = \
-             xpress_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                           args.opt, args.detailed)
+            (
+                x,
+                objective,
+                status,
+                solver_info,
+                constraints_additional_information,
+                variables_additional_information,
+            ) = xpress_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+                args.opt,
+                args.detailed,
+            )
 
         elif args.dsp_dw:
             struct_eq, struct_ineq = program.get_first_level_constraints_decomposition()
-            x, objective, status, solver_info = \
-                dsp_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                           struct_eq, struct_ineq, algorithm="dw",
-                           solver_lib=args.solver_lib)
+            x, objective, status, solver_info = dsp_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+                struct_eq,
+                struct_ineq,
+                algorithm="dw",
+                solver_lib=args.solver_lib,
+            )
 
         elif args.dsp_de:
             struct_eq, struct_ineq = program.get_first_level_constraints_decomposition()
-            x, objective, status, solver_info = \
-                dsp_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                           struct_eq, struct_ineq, algorithm="de",
-                           solver_lib=args.solver_lib)
+            x, objective, status, solver_info = dsp_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+                struct_eq,
+                struct_ineq,
+                algorithm="de",
+                solver_lib=args.solver_lib,
+            )
 
         elif args.highs:
-            x, objective, status, solver_info = \
-                highs_solver(A_eq, b_eq, A_ineq, b_ineq, C_sum, objective_offset, name_tuples,
-                             args.opt, solver_lib=args.solver_lib)
+            x, objective, status, solver_info = highs_solver(
+                A_eq,
+                b_eq,
+                quadratic_eq,
+                A_ineq,
+                b_ineq,
+                quadratic_ineq,
+                C_sum,
+                objective_offset,
+                quadratic_objective,
+                name_tuples,
+                args.opt,
+                solver_lib=args.solver_lib,
+            )
         else:
 
             print("No solver was chosen")
@@ -239,11 +430,18 @@ def main():
             filename = filename + "_" + time_str
 
         if args.json:
-            dictionary = generate_json(program, solver_info, status, x,
-                                       objective, C,
-                                       indep_terms_c,
-                                       constraints_additional_information,
-                                       variables_additional_information)
+            dictionary = generate_json(
+                program,
+                solver_info,
+                status,
+                x,
+                objective,
+                C,
+                indep_terms_c,
+                quadratic_objective,
+                constraints_additional_information,
+                variables_additional_information,
+            )
             try:
                 with open(filename + ".json", 'w') as outfile:
 
@@ -256,9 +454,14 @@ def main():
                       + ".json already exists and is open.")
                 print("Was unable to save the file")
         if args.row_csv or args.col_csv:
-            names_var_and_param, values_var_and_param = \
-                generate_list_values_tuple(program, x, C, indep_terms_c,
-                                           constraints_info=constraints_additional_information)
+            names_var_and_param, values_var_and_param = generate_list_values_tuple(
+                program,
+                x,
+                C,
+                indep_terms_c,
+                quadratic_objective,
+                constraints_info=constraints_additional_information,
+            )
             write_csv(filename + ".csv", names_var_and_param,
                       values_var_and_param, transpose=args.col_csv)
     else:

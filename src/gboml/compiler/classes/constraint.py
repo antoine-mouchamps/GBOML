@@ -11,12 +11,13 @@ from .condition import Condition
 
 class Constraint(Type):
     """
-    Constraint object is a structure composed of 
-    - an operator 
-    - a left handside expression 
-    - a right handside expression 
-    - a TimeInterval object 
+    Constraint object is a structure composed of
+    - an operator
+    - a left handside expression
+    - a right handside expression
+    - a TimeInterval object
     - a condition object
+    - a quadratic predicate
     """
 
     def __init__(self, c_type: str, lhs: Expression, rhs: Expression,
@@ -44,6 +45,7 @@ class Constraint(Type):
         self.lhs = lhs
         self.time_interval = time_interval
         self.condition = condition
+        self.quadratic = False
 
     def __str__(self) -> str:
 
@@ -62,6 +64,14 @@ class Constraint(Type):
 
     def set_name(self, name):
         self.name = name
+
+    def is_quadratic(self) -> bool:
+
+        return self.quadratic
+
+    def set_quadratic(self, predicate: bool):
+
+        self.quadratic = predicate
 
     def get_time_interval(self):
 

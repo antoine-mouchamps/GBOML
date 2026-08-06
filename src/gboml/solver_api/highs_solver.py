@@ -6,8 +6,13 @@
 
 """Highs Solver file, contains the interface to DSP solver .
 
-Takes the matrix A, the vector b and vector c as input of the problem
-    min : c^T * X s.t. A * X <= b
+Takes the matrices and vectors of the problem
+
+    min : c^T * X + X^T * Q_obj * X
+    s.t. (A * X)_r + X^T * Q_r * X  <=  b_r,   for every row r
+
+where Q_r is the degree two part of row r, handed over alongside the degree
+one part it shares its rows with,
 and passes it to the dsp solver.
 
   Typical usage example:
@@ -27,39 +32,53 @@ from gboml.compiler.utils import flat_nested_list_to_two_level
 
 from .pyhighs import PyHighs
 
+# this API is handed the degree two part of the problem like every other
+# one, and ignores it : it does not accept a product of two variables
+SUPPORTS_QUADRATIC = False
 
-def highs_solver(matrix_a_eq: coo_matrix, vector_b_eq: np.ndarray,
-                 matrix_a_ineq: coo_matrix, vector_b_ineq: np.ndarray,
-                 vector_c: np.ndarray,
-                 objective_offset: float, name_tuples: dict,
-                 opt_file: str = None,
-                 option_dict: dict = None,
-                 solver_lib=None
-                 ) -> tuple:
+
+def highs_solver(
+    matrix_a_eq: coo_matrix,
+    vector_b_eq: np.ndarray,
+    quadratic_eq,
+    matrix_a_ineq: coo_matrix,
+    vector_b_ineq: np.ndarray,
+    quadratic_ineq,
+    vector_c: np.ndarray,
+    objective_offset: float,
+    quadratic_objective,
+    name_tuples: dict,
+    opt_file: str = None,
+    option_dict: dict = None,
+    solver_lib=None,
+) -> tuple:
     """highs_solver
 
-        takes as input the matrix A, the vectors b and c. It returns the
-        solution of the problem : min c^T * x s.t. A * x <= b found by
-        the Highs solver
+    takes as input the matrices and vectors of the problem stated at
+    the top of this file. It returns the solution found by the Highs solver
 
-        Args:
-            matrix_a_eq -> coo_matrix of equality constraints
-            vector_b_eq -> np.ndarray of independent terms of each equality constraint
-            matrix_a_ineq -> coo_matrix of inequality constraints
-            vector_b_eq -> np.ndarray of independent terms of each inequality constraint
-            vector_c -> np.ndarray of objective vector
-            objective_offset -> float of the objective offset
-            name_tuples -> dictionary of <node_name variables> used to get
-                           the type
-            opt_file -> optimization parameters file
-            option_dict -> alternative to optimization parameters file that associates
-                           key = <option to set>, value= value
-            solver_lib -> path to solver library
-        Returns:
-            solution -> np.ndarray of the flat solution
-            objective -> float of the objective value
-            status -> solution status
-            solver_info -> dictionary of solver information
+    Args:
+        matrix_a_eq -> coo_matrix of equality constraints
+        vector_b_eq -> np.ndarray of independent terms of each equality constraint
+        matrix_a_ineq -> coo_matrix of inequality constraints
+        vector_b_eq -> np.ndarray of independent terms of each inequality constraint
+        quadratic_eq, quadratic_ineq, quadratic_objective -> the degree two
+                       part of each block, handed over like every other
+                       API receives it and ignored here : this one does
+                       not accept a product of two variables
+        vector_c -> np.ndarray of objective vector
+        objective_offset -> float of the objective offset
+        name_tuples -> dictionary of <node_name variables> used to get
+                       the type
+        opt_file -> optimization parameters file
+        option_dict -> alternative to optimization parameters file that associates
+                       key = <option to set>, value= value
+        solver_lib -> path to solver library
+    Returns:
+        solution -> np.ndarray of the flat solution
+        objective -> float of the objective value
+        status -> solution status
+        solver_info -> dictionary of solver information
 
     """
     if option_dict == None:

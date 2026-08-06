@@ -9,9 +9,10 @@ from .expression import Expression
 
 class Objective(Type):
     """
-    Objective object is composed of: 
+    Objective object is composed of:
     - a type either min or max
     - an expression
+    - a quadratic predicate
     """
 
     def __init__(self, o_type, expression, time_interval=None,
@@ -26,15 +27,24 @@ class Objective(Type):
         self.time_interval = time_interval
         self.condition = condition
         self.name = name
+        self.quadratic = False
 
     def __str__(self):
 
         string = "["+str(self.type)+','+str(self.expression)+']'
-        
+
         return string
 
     def get_name(self):
         return self.name
+
+    def is_quadratic(self) -> bool:
+
+        return self.quadratic
+
+    def set_quadratic(self, predicate: bool):
+
+        self.quadratic = predicate
 
     def get_expression(self):
         

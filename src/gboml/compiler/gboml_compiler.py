@@ -19,9 +19,9 @@ check and translate it to another structure.
 from .gboml_lexer import tokenize_file
 from .gboml_parser import parse_file
 from .gboml_semantic import semantic, check_mdp, convert_to_mdp, \
-    check_program_linearity, factorize_program
-from .gboml_matrix_generation import matrix_generation_a_b, \
-    matrix_generation_c, extend_factor, extend_factor_on_multiple_processes
+    check_program_degrees, factorize_program
+from .gboml_matrix_generation import matrix_generation_a_b_Q, \
+    matrix_generation_c_Q, extend_factor, extend_factor_on_multiple_processes
 from .utils import move_to_directory
 
 import sys
@@ -77,7 +77,7 @@ def compile_gboml(input_file: str, log: bool = False,
         print(ast.to_string())
 
     program, program_variables_dict, definitions = semantic(ast)
-    check_program_linearity(program, program_variables_dict, definitions)
+    check_program_degrees(program, program_variables_dict, definitions)
     factorize_program(program, program_variables_dict, definitions)
 
     if nb_processes > 1:
@@ -85,14 +85,19 @@ def compile_gboml(input_file: str, log: bool = False,
     else:
         extend_factor(program, definitions)
 
-    matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq = matrix_generation_a_b(program)
-    vector_c, indep_terms_c, alone_term_c = matrix_generation_c(program)
+    matrix_eq, vector_b_eq, quadratic_eq, matrix_ineq, vector_b_ineq, \
+        quadratic_ineq = matrix_generation_a_b_Q(program)
+    vector_c, indep_terms_c, quadratic_objective, alone_term_c = \
+        matrix_generation_c_Q(program)
     program.free_factors_objectives()
 
     time_horizon = program.get_time().get_value()
     os.chdir(curr_dir)
-    return program, matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq, vector_c, indep_terms_c, \
-           alone_term_c, time_horizon, program.get_tuple_name()
+    return (program,
+            matrix_eq, vector_b_eq, quadratic_eq,
+            matrix_ineq, vector_b_ineq, quadratic_ineq,
+            vector_c, indep_terms_c, quadratic_objective, alone_term_c,
+            time_horizon, program.get_tuple_name())
 
 
 def compile_gboml_mdp(input_file: str):

@@ -106,6 +106,38 @@ def get_nodes_and_edges_model_information(nodes, edges):
     return nodes_information, hyperedge_info
 
 
+def objective_rows_values(solution, c_matrix, indep_terms_c, quadratic_objective):
+    """objective_rows_values
+
+    the value each row of the objective matrix takes at the solution
+    found, both degrees included. An objective is read back from the rows
+    it was expanded to, so the products of two variables are gathered per
+    row rather than summed as a whole.
+
+    Args:
+        solution (array): flat solution
+        c_matrix (coo-matrix): matrix of the degree one part
+        indep_terms_c (array): independent term of each row of c_matrix
+        quadratic_objective (coo-array): degree two part, over the rows of
+                                         c_matrix
+
+    Returns:
+        values (array): one value per row of the objective matrix
+
+    """
+
+    linear_part = c_matrix * solution + indep_terms_c
+
+    if quadratic_objective is None or quadratic_objective.nnz == 0:
+        return linear_part
+
+    rows, columns_i, columns_j = quadratic_objective.coords
+    products = quadratic_objective.data * solution[columns_i] * solution[columns_j]
+    quadratic_part = np.bincount(rows, weights=products, minlength=len(linear_part))
+
+    return linear_part + quadratic_part
+
+
 def dict_values_in_nested_dict(nodes, hyperedges, solution,
                                c_matrix_time_solution,
                                constraint_info=None,
@@ -261,9 +293,18 @@ def dict_values_in_nested_dict(nodes, hyperedges, solution,
     return dict_solution
 
 
-def generate_json(program, solver_data, status, solution, objective, c_matrix,
-                  indep_terms_c, constraint_info=None,
-                  variables_info=None) -> dict:
+def generate_json(
+    program,
+    solver_data,
+    status,
+    solution,
+    objective,
+    c_matrix,
+    indep_terms_c,
+    quadratic_objective,
+    constraint_info=None,
+    variables_info=None,
+) -> dict:
     """generate_json
 
         Converts all the information contained in the inputs into one dictionary
@@ -315,7 +356,9 @@ def generate_json(program, solver_data, status, solution, objective, c_matrix,
     solution_data["objective"] = objective
 
     if solution is not None:
-        product = c_matrix * solution + indep_terms_c
+        product = objective_rows_values(
+            solution, c_matrix, indep_terms_c, quadratic_objective
+        )
 
         solution_data["elements"] = \
             dict_values_in_nested_dict(program.get_nodes(),
@@ -429,7 +472,14 @@ def flat_graph_and_add_node_prefix(nodes, hyperedges, solution, product, constra
     return name_tuples
 
 
-def generate_list_values_tuple(program, solution, c_matrix, indep_terms_c, constraints_info=None):
+def generate_list_values_tuple(
+    program,
+    solution,
+    c_matrix,
+    indep_terms_c,
+    quadratic_objective,
+    constraints_info=None,
+):
     """generate_list_values_tuple
 
         Converts all the information contained in the inputs into a tuple
@@ -457,7 +507,9 @@ def generate_list_values_tuple(program, solution, c_matrix, indep_terms_c, const
 
     product = []
     if solution is not None:
-        product = c_matrix * solution + indep_terms_c
+        product = objective_rows_values(
+            solution, c_matrix, indep_terms_c, quadratic_objective
+        )
 
     global_param: dict = program.get_global_parameters()
     for param in global_param.keys():

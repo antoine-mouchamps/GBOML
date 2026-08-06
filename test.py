@@ -15,6 +15,7 @@ Unittesting of different interfaces to GBOML and the implementation
 from gboml import GbomlGraph, VariableType
 from gboml.compiler.classes import Parameter, Expression, Node, Hyperedge,\
     Time, Program
+from gboml.compiler import has_quadratic_terms
 from gboml.compiler import compile_gboml
 from gboml.solver_api import gurobi_solver, cplex_solver, xpress_solver, \
     highs_solver
@@ -633,8 +634,10 @@ class CompilerTests(unittest.TestCase):
         global PATH
         os.chdir(PATH)
 
-        _, matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq, vector_c, indep_terms_c, \
-         alone_term_c, time_horizon, name_tuples = compile_gboml("test/test23.txt")
+        (_, matrix_eq, vector_b_eq, quadratic_eq, matrix_ineq, vector_b_ineq,
+         quadratic_ineq, vector_c, indep_terms_c, quadratic_objective,
+         alone_term_c,
+         time_horizon, name_tuples) = compile_gboml("test/test23.txt")
         objective_offset = float(indep_terms_c.sum())
         c_sum = np.asarray(vector_c.sum(axis=0), dtype=float)
         self.assertEqual(objective_offset, 0)
@@ -648,8 +651,10 @@ class CompilerTests(unittest.TestCase):
                              [0., 0., 0., 0., 0., 0., 0., 0., 1., 0.],
                              [0., 0., 0., 0., 0., 0., 0., 0., 0., 1.]]
         self.assertTrue(((matrix_eq.todense() - np.array(expected_matrix_a)) <= 0.1).all())
-        x, objective, _, _, _, _ = gurobi_solver(matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq,
-                                                 c_sum, objective_offset, name_tuples)
+        x, objective, _, _, _, _ = gurobi_solver(matrix_eq, vector_b_eq, quadratic_eq,
+                                                 matrix_ineq, vector_b_ineq, quadratic_ineq,
+                                                 c_sum, objective_offset, quadratic_objective,
+                                                 name_tuples)
         self.assertTrue((np.array([120., 376.8, 0., 0., 0., 0., 0., 0., 6.9, 6.4]) == x).all())
         self.assertEqual(objective, 496.8)
 
@@ -661,12 +666,16 @@ class CompilerTests(unittest.TestCase):
         """
         global PATH
         os.chdir(PATH)
-        _, matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq, vector_c, indep_terms_c, \
-         alone_term_c, time_horizon, name_tuples = compile_gboml("test/test24.txt")
+        (_, matrix_eq, vector_b_eq, quadratic_eq, matrix_ineq, vector_b_ineq,
+         quadratic_ineq, vector_c, indep_terms_c, quadratic_objective,
+         alone_term_c,
+         time_horizon, name_tuples) = compile_gboml("test/test24.txt")
         objective_offset = float(indep_terms_c.sum())
         c_sum = np.asarray(vector_c.sum(axis=0), dtype=float)
-        x, objective, _, _, _, _ = gurobi_solver(matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq, c_sum,
-                                                objective_offset, name_tuples)
+        x, objective, _, _, _, _ = gurobi_solver(matrix_eq, vector_b_eq, quadratic_eq,
+                                                matrix_ineq, vector_b_ineq, quadratic_ineq,
+                                                c_sum, objective_offset, quadratic_objective,
+                                                name_tuples)
         self.assertTrue((np.array([120., 1080., 0., 0., 0., 0., 0., 0., 6.9, 6.4, 118]) == x).all())
         self.assertEqual(objective, 1200)
 
@@ -678,12 +687,16 @@ class CompilerTests(unittest.TestCase):
         """
         global PATH
         os.chdir(PATH)
-        _, matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq, vector_c, indep_terms_c, \
-         alone_term_c, time_horizon, name_tuples = compile_gboml("test/test25.txt")
+        (_, matrix_eq, vector_b_eq, quadratic_eq, matrix_ineq, vector_b_ineq,
+         quadratic_ineq, vector_c, indep_terms_c, quadratic_objective,
+         alone_term_c,
+         time_horizon, name_tuples) = compile_gboml("test/test25.txt")
         objective_offset = float(indep_terms_c.sum())+alone_term_c
         c_sum = np.asarray(vector_c.sum(axis=0), dtype=float)
-        x, objective, _, _, _, _ = xpress_solver(matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq,
-                                                 c_sum, objective_offset, name_tuples)
+        x, objective, _, _, _, _ = xpress_solver(matrix_eq, vector_b_eq, quadratic_eq,
+                                                 matrix_ineq, vector_b_ineq, quadratic_ineq,
+                                                 c_sum, objective_offset, quadratic_objective,
+                                                 name_tuples)
         self.assertTrue((np.array([6., 5.]) == x).all())
         self.assertEqual(11, objective)
 
@@ -697,8 +710,10 @@ class CompilerTests(unittest.TestCase):
         os.chdir(PATH)
         # program, matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq, vector_c, indep_terms_c, \
         #            alone_term_c, time_horizon, program.get_tuple_name()
-        _, matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq, vector_c, \
-         indep_terms_c, alone_term_c, _, _ = compile_gboml("test/test26.txt")
+        (_, matrix_eq, vector_b_eq, quadratic_eq, matrix_ineq, vector_b_ineq,
+         quadratic_ineq, vector_c, indep_terms_c, quadratic_objective,
+         alone_term_c,
+         _, _) = compile_gboml("test/test26.txt")
         objective_offset = float(indep_terms_c.sum())+alone_term_c
         c_sum = np.asarray(vector_c.sum(axis=0), dtype=float)
         self.assertEqual(objective_offset, 1)
@@ -716,13 +731,17 @@ class CompilerTests(unittest.TestCase):
         """
         global PATH
         os.chdir(PATH)
-        _, matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq, vector_c, \
-         indep_terms_c, alone_term_c, _, name_tuples = compile_gboml("test/test27.txt")
+        (_, matrix_eq, vector_b_eq, quadratic_eq, matrix_ineq, vector_b_ineq,
+         quadratic_ineq, vector_c, indep_terms_c, quadratic_objective,
+         alone_term_c,
+         _, name_tuples) = compile_gboml("test/test27.txt")
         objective_offset = float(indep_terms_c.sum())
         c_sum = np.asarray(vector_c.sum(axis=0), dtype=float)
         self.assertEqual(objective_offset, 0)
-        solution = cplex_solver(matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq,
-                                 c_sum, objective_offset, name_tuples)
+        solution = cplex_solver(matrix_eq, vector_b_eq, quadratic_eq,
+                                matrix_ineq, vector_b_ineq, quadratic_ineq,
+                                c_sum, objective_offset, quadratic_objective,
+                                name_tuples)
         self.assertTrue((solution[0] == np.array([1., 1., 1., 1., 1.])).all())
 
     def test_nested_nodes_with_hyperedge_and_parent_parameters(self):
@@ -733,8 +752,10 @@ class CompilerTests(unittest.TestCase):
         """
         global PATH
         os.chdir(PATH)
-        _, matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, \
-        indep_terms_c, alone_term_c, _, name_tuples = compile_gboml("test/test28.txt")
+        (_, matrix_a_eq, vector_b_eq, quadratic_eq, matrix_a_ineq,
+         vector_b_ineq, quadratic_ineq, vector_c, indep_terms_c,
+         quadratic_objective, alone_term_c,
+         _, name_tuples) = compile_gboml("test/test28.txt")
         objective_offset = float(indep_terms_c.sum())
         c_sum = np.asarray(vector_c.sum(axis=0), dtype=float)
         expected_constraint_matrix_eq = np.array([[1, 0, 1, 0], [0, 1, 0, 1]])
@@ -965,26 +986,79 @@ class CompilerTests(unittest.TestCase):
         return_code = process.returncode
         self.assertEqual(return_code, 0)
 
+    def test_quadratic_sum_times_sum(self):
+        """ test_quadratic_sum_times_sum
+
+        Tests a product of two sums completed independently before being
+        multiplied together, rather than a product taken inside one shared
+        sum body. Each side folds to a term of width greater than one before
+        the multiplication happens, which is the shape that exercises the
+        general branch of block.py's _outer_product rather than the width one
+        fast path every other quadratic sum test goes through : x sums to
+        1+2+3 == 6, y sums to 4+5 == 9, so z, and the objective, is 54
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test52_quadratic_sum_times_sum.txt', "--gurobi",
+             "--json", "--output", "test/test52_quadratic_sum_times_sum"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+        with open("test/test52_quadratic_sum_times_sum.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            self.assertAlmostEqual(solution["objective"], 54.0, places=4)
+            variables = solution["elements"]["A"]["variables"]
+            self.assertEqual(variables["x"]["values"], [1.0, 2.0, 3.0])
+            self.assertEqual(variables["y"]["values"], [4.0, 5.0])
+            self.assertAlmostEqual(variables["z"]["values"][0], 54.0,
+                                   places=4)
+
     def test_quadratic_unbounded_variable(self):
         """ test_quadratic_unbounded_variable
 
         Tests a file where a variable involved in a product of two variables
-        has no upper bound, which must be reported rather than inferred
+        has no upper bound. Whether a bound is needed at all depends on the
+        shape of the quadratic form, which the solver classifies exactly and
+        GBOML does not classify at all, so the model compiles and the question
+        is left to the solver
 
         """
-        process = subprocess.run(['gboml',
-                                  'test/test40_quadratic_unbounded.txt'],
-                                 stdout=subprocess.PIPE,
-                                 universal_newlines=True)
-        return_code = process.returncode
-        self.assertNotEqual(return_code, 0)
-        self.assertIn("A.x", process.stdout)
+        gboml_model = GbomlGraph(2)
+        nodes, edges, global_params = \
+            gboml_model.import_all_nodes_and_edges(
+                "test/test40_quadratic_unbounded.txt")
+        gboml_model.add_nodes_in_model(*nodes)
+        gboml_model.add_hyperedges_in_model(*edges)
+        gboml_model.add_global_parameters(global_params)
+        gboml_model.build_model()
+
+        self.assertTrue(has_quadratic_terms(
+            gboml_model.quadratic_eq, gboml_model.quadratic_ineq,
+            gboml_model.quadratic_objective))
+
+    def test_quadratic_positive_semi_definite_form(self):
+        """ test_quadratic_positive_semi_definite_form
+
+        Tests a form which is positive semi-definite but written with cross
+        terms, (x - y)**2, over unbounded variables. It needs no bound at all
+        and used to be refused by a convexity test of our own which only ever
+        recognised a plain sum of squares
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test55_quadratic_psd.txt', "--gurobi"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
 
     def test_quadratic_bounded_variable(self):
         """ test_quadratic_bounded_variable
 
-        Tests that the very same file compiles once the missing bound is
-        written back
+        Tests that a product of two variables which are bounded on both sides
+        is solved through, the shape a spatial branching needs
 
         """
         process = subprocess.run(
@@ -1037,10 +1111,6 @@ class CompilerTests(unittest.TestCase):
         return_code = process.returncode
         self.assertEqual(return_code, 0)
 
-        # a sum of squares is convex, so it is solved without any spatial
-        # branching, which is what the NonConvex parameter would enable
-        self.assertNotIn("NonConvex", process.stdout)
-
         with open("test/test44_quadratic_objective.json", 'r') as j:
             contents = json.loads(j.read())
             solution = contents["solution"]
@@ -1055,8 +1125,10 @@ class CompilerTests(unittest.TestCase):
     def test_quadratic_objective_maximised(self):
         """ test_quadratic_objective_maximised
 
-        Tests that maximising a sum of squares, which is not convex, is solved
-        by spatial branching and reaches the bound of the variables
+        Tests that maximising a sum of squares, which is not convex once
+        negated into a minimisation, reaches the bound of the variables. The
+        solver recognises the form and turns to spatial branching on its own,
+        no parameter of ours being set
 
         """
         process = subprocess.run(
@@ -1066,7 +1138,6 @@ class CompilerTests(unittest.TestCase):
             universal_newlines=True)
         return_code = process.returncode
         self.assertEqual(return_code, 0)
-        self.assertIn("NonConvex", process.stdout)
 
         with open("test/test45_quadratic_objective_max.json", 'r') as j:
             contents = json.loads(j.read())
@@ -1080,11 +1151,12 @@ class CompilerTests(unittest.TestCase):
                 solution["elements"]["A"]["objectives"]["named"]["cost"],
                 18.0, places=4)
 
-    def test_quadratic_convex_needs_no_bound(self):
-        """ test_quadratic_convex_needs_no_bound
+    def test_quadratic_convex_constraint(self):
+        """ test_quadratic_convex_constraint
 
-        Tests that a convex quadratic constraint compiles without the bounds a
-        spatial branching would have needed, as none is performed
+        Tests a constraint holding a square, x**2 <= 4, under a maximisation.
+        No bound of any kind is written on x : the square alone is what pins
+        it, and reading that is the solver's business
 
         """
         process = subprocess.run(
@@ -1095,7 +1167,6 @@ class CompilerTests(unittest.TestCase):
             universal_newlines=True)
         return_code = process.returncode
         self.assertEqual(return_code, 0)
-        self.assertNotIn("NonConvex", process.stdout)
 
         with open("test/test46_quadratic_convex_constraint.json", 'r') as j:
             contents = json.loads(j.read())
@@ -1109,17 +1180,24 @@ class CompilerTests(unittest.TestCase):
     def test_quadratic_objective_unbounded(self):
         """ test_quadratic_objective_unbounded
 
-        Tests that a variable of a non convex objective which has no upper
-        bound is reported, exactly as one of a non convex constraint is
+        Tests that an objective holding a product of two variables which have
+        no upper bound compiles. Whether the solver needs those bounds depends
+        on the shape of the quadratic form, which it classifies itself, so the
+        model is handed over rather than refused
 
         """
-        process = subprocess.run(
-            ['gboml', 'test/test47_quadratic_objective_unbounded.txt'],
-            stdout=subprocess.PIPE,
-            universal_newlines=True)
-        return_code = process.returncode
-        self.assertNotEqual(return_code, 0)
-        self.assertIn("A.x", process.stdout)
+        gboml_model = GbomlGraph(2)
+        nodes, edges, global_params = \
+            gboml_model.import_all_nodes_and_edges(
+                "test/test47_quadratic_objective_unbounded.txt")
+        gboml_model.add_nodes_in_model(*nodes)
+        gboml_model.add_hyperedges_in_model(*edges)
+        gboml_model.add_global_parameters(global_params)
+        gboml_model.build_model()
+
+        self.assertTrue(has_quadratic_terms(
+            gboml_model.quadratic_eq, gboml_model.quadratic_ineq,
+            gboml_model.quadratic_objective))
 
     def test_quadratic_objective_wrong_solver(self):
         """ test_quadratic_objective_wrong_solver
@@ -1159,11 +1237,11 @@ class CompilerTests(unittest.TestCase):
         return solution["elements"]["A"]["variables"]
 
     def test_sum_ragged_range(self):
-        """ test_sum_ragged_range
+        """test_sum_ragged_range
 
         Tests a sum whose range ends on the index of the constraint, so every
         row holds a different number of terms. The rows which are shorter than
-        the longest one used to be dropped silently, see KNOWN_ISSUES.md.
+        the longest one used to be dropped silently.
         The same sum is checked once more with a product of two variables in
         it, to cover the case where a sum and a product are combined
 
@@ -1178,11 +1256,9 @@ class CompilerTests(unittest.TestCase):
                          [1.0, 3.0, 6.0, 10.0])
 
     def test_sum_where_condition(self):
-        """ test_sum_where_condition
+        """test_sum_where_condition
 
-        Tests a sum filtered by a where condition. The condition used to be
-        ignored whenever the expression held a product of two variables, see
-        KNOWN_ISSUES.md
+        Tests a sum filtered by a where condition
 
         """
         variables = self.solve_sum_semantics("test48_sum_semantics", "cond")
@@ -1203,11 +1279,11 @@ class CompilerTests(unittest.TestCase):
                          [1.0, 1.0, 4.0, 8.0])
 
     def test_nested_sum(self):
-        """ test_nested_sum
+        """test_nested_sum
 
         Tests a sum inside a sum, the inner range depending on the outer index.
-        This used to crash the linear factorization outright, see
-        KNOWN_ISSUES.md. Checked once more with a product inside
+        This used to crash the linear factorization outright. Checked once more
+        with a product inside
 
         """
         variables = self.solve_sum_semantics("test48_sum_semantics", "nested")
@@ -1271,6 +1347,83 @@ class CompilerTests(unittest.TestCase):
             solution = json.loads(j.read())["solution"]
             variables = solution["elements"]["A"]["variables"]
             self.assertEqual(variables["z"]["values"], [1.0])
+
+    def test_constant_objective(self):
+        """ test_constant_objective
+
+        Tests an objective built out of parameters only, which holds no row of
+        the objective matrix and only shifts the optimum by its own constant.
+        Its independent term is one value per row of the objective it was
+        expanded over, which used to be truth tested as a whole
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test53_constant_objective.txt', "--linprog",
+             "--json", "--output", "test/test53_constant_objective"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test53_constant_objective.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+            # 3 for the objective holding a variable, 0 + 1 + 2 for the one
+            # built out of the index only
+            self.assertAlmostEqual(solution["objective"], 6.0, places=4)
+            objectives = solution["elements"]["A"]["objectives"]["named"]
+            self.assertAlmostEqual(objectives["c"], 3.0, places=4)
+            self.assertAlmostEqual(objectives["d"], 3.0, places=4)
+
+    def test_empty_objective(self):
+        """ test_empty_objective
+
+        Tests an objective whose condition keeps no index at all. It expands
+        to no row and contributes nothing, rather than reporting an
+        independent term it does not have
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test54_empty_objective.txt', "--linprog",
+             "--json", "--output", "test/test54_empty_objective"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test54_empty_objective.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+            self.assertAlmostEqual(solution["objective"], 3.0, places=4)
+            objectives = solution["elements"]["A"]["objectives"]["named"]
+            self.assertAlmostEqual(objectives["c"], 3.0, places=4)
+            self.assertAlmostEqual(objectives["d"], 0.0, places=4)
+
+    def test_power_operator(self):
+        """ test_power_operator
+
+        Tests the ** operator applied to an expression holding a variable.
+        Only the exponent is a constant, and it is read from the expression of
+        the exponent alone : the whole power expression can not be evaluated,
+        its base holding a variable, and asking it for a constant used to
+        refuse every power outright. Each exponent is written in a different
+        shape, a bare parameter, a literal, an expression over the horizon,
+        and the degenerate 0 and 1 which produce no product at all
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test56_power_operator.txt', "--gurobi",
+             "--json", "--output", "test/test56_power_operator"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test56_power_operator.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+            self.assertAlmostEqual(solution["objective"], 13.0, places=4)
+            variables = solution["elements"]["A"]["variables"]
+            self.assertEqual(variables["x"]["values"], [2.0, 3.0])
+            for name in ["by_parameter", "by_literal"]:
+                self.assertEqual(variables[name]["values"], [4.0, 9.0])
+            for name in ["by_horizon", "by_one"]:
+                self.assertEqual(variables[name]["values"], [2.0, 3.0])
+            self.assertEqual(variables["by_zero"]["values"], [1.0, 1.0])
 
 
 class GBOMLpyTest(unittest.TestCase):
@@ -1475,16 +1628,57 @@ class GBOMLpyTest(unittest.TestCase):
         gboml_model.add_hyperedges_in_model(*edges)
         gboml_model.add_global_parameters(global_params)
         gboml_model.build_model()
-        quadratic_part = gboml_model.quadratic_part
+        quadratic_terms = (gboml_model.quadratic_eq,
+                           gboml_model.quadratic_ineq,
+                           gboml_model.quadratic_objective)
+        nb_eq_rows = gboml_model.matrix_a_eq.shape[0]
         _, objective, _, _, _, _ = gboml_model.solve_gurobi()
         f.close()
         sys.stdout = temp
 
-        self.assertFalse(quadratic_part.is_empty())
-        self.assertTrue(quadratic_part.has_quadratic_terms())
-        self.assertFalse(quadratic_part.is_convex())
-        self.assertEqual(quadratic_part.get_nb_constraints("eq"), 3)
+        self.assertTrue(has_quadratic_terms(*quadratic_terms))
+        # the degree two part shares the rows of the degree one one
+        self.assertEqual(gboml_model.quadratic_eq.shape[0], nb_eq_rows)
         self.assertAlmostEqual(objective, 15.0, places=4)
+
+    def test_quadratic_objective_reaches_the_matrix(self):
+        """ test_quadratic_objective_reaches_the_matrix
+
+        Tests that an objective which is a bare product of two variables, and
+        therefore holds no degree one term of its own, still expands to the
+        rows of the objective matrix and still carries its degree two part.
+        Reading the degree two part off the rows of the degree one one is what
+        makes those rows have to exist
+
+        """
+        import os
+        import sys
+        f = open(os.devnull, 'w')
+        temp = sys.stdout
+        sys.stdout = f
+
+        gboml_model = GbomlGraph(3)
+        nodes, edges, global_params = gboml_model.import_all_nodes_and_edges(
+            "test/test44_quadratic_objective.txt")
+        gboml_model.add_nodes_in_model(*nodes)
+        gboml_model.add_hyperedges_in_model(*edges)
+        gboml_model.add_global_parameters(global_params)
+        gboml_model.build_model()
+        quadratic_objective = gboml_model.quadratic_objective
+        vector_c = gboml_model.vector_c
+        _, objective, _, _, _, _ = gboml_model.solve_gurobi()
+        f.close()
+        sys.stdout = temp
+
+        # the objective still holds one row per time step, even though not one
+        # of them carries a degree one entry
+        self.assertEqual(vector_c.shape[0], 3)
+        self.assertEqual(vector_c.nnz, 0)
+        # and its degree two part lands on those very same rows
+        self.assertEqual(quadratic_objective.nnz, 3)
+        self.assertEqual(sorted(quadratic_objective.coords[0].tolist()),
+                         [0, 1, 2])
+        self.assertAlmostEqual(objective, 12.0, places=4)
 
     def test_quadratic_unsupported_solver(self):
         """ test_quadratic_unsupported_solver

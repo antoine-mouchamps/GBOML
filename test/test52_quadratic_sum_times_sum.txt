@@ -1,0 +1,26 @@
+// A product of two sums completed independently before being multiplied,
+// rather than a product taken inside one shared sum body. This is the case
+// where the outer product of block.py's _outer_product spreads two already
+// widened terms against each other : x sums to 1+2+3 == 6, y sums to 4+5 == 9,
+// so their product is 54.
+#TIMEHORIZON
+T = 1;
+
+#NODE A
+#PARAMETERS
+N = 3;
+M = 2;
+#VARIABLES
+internal : x[N];
+internal : y[M];
+internal : z;
+#CONSTRAINTS
+lo_x  : x[i] >= 0  for i in [0:N-1];
+up_x  : x[i] <= 10 for i in [0:N-1];
+lo_y  : y[j] >= 0  for j in [0:M-1];
+up_y  : y[j] <= 10 for j in [0:M-1];
+fix_x : x[i] == i + 1 for i in [0:N-1];
+fix_y : y[j] == j + 4 for j in [0:M-1];
+dot   : z == sum(x[i] for i in [0:N-1]) * sum(y[j] for j in [0:M-1]);
+#OBJECTIVES
+min cost: z;

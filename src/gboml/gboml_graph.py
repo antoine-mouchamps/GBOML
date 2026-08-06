@@ -3,15 +3,31 @@
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
 
-from .compiler import parse_file, semantic, check_program_linearity, \
-    matrix_generation_a_b, matrix_generation_c, \
-    factorize_program, extend_factor, extend_factor_on_multiple_processes, \
-    set_limited_sized_dict
+from .compiler import (
+    parse_file,
+    semantic,
+    check_program_degrees,
+    matrix_generation_a_b_Q,
+    matrix_generation_c_Q,
+    has_quadratic_terms,
+    factorize_program,
+    extend_factor,
+    extend_factor_on_multiple_processes,
+    set_limited_sized_dict,
+)
 from .compiler.classes import Parameter, Expression, Node, Hyperedge, Time, \
     Program
 from .compiler.utils import error_, move_to_directory
-from .solver_api import cplex_solver, gurobi_solver, clp_solver, dsp_solver, \
-    xpress_solver, highs_solver, cbc_solver
+from .solver_api import (
+    cplex_solver,
+    gurobi_solver,
+    clp_solver,
+    dsp_solver,
+    xpress_solver,
+    highs_solver,
+    cbc_solver,
+    supports_quadratic,
+)
 from .output import generate_json, generate_list_values_tuple
 
 from enum import Enum
@@ -77,6 +93,9 @@ class GbomlGraph:
         self.vector_c = None
         self.indep_term_c = None
         self.alone_term_c = None
+        self.quadratic_eq = None
+        self.quadratic_ineq = None
+        self.quadratic_objective = None
 
     def __add_node(self, to_add_node):
         """
@@ -211,7 +230,7 @@ class GbomlGraph:
         program = Program(self.list_nodes, timescale=self.timehorizon,
                           links=self.list_hyperedges, global_param=self.global_parameters)
         program, program_variables_dict, definitions = semantic(program)
-        check_program_linearity(program, program_variables_dict, definitions)
+        check_program_degrees(program, program_variables_dict, definitions)
         factorize_program(program, program_variables_dict, definitions)
         if nb_processes > 1:
             extend_factor_on_multiple_processes(program, definitions,
@@ -219,8 +238,17 @@ class GbomlGraph:
         else:
             extend_factor(program, definitions)
 
-        matrix_eq, vector_b_eq, matrix_ineq, vector_b_ineq = matrix_generation_a_b(program)
-        vector_c, indep_terms_c, alone_term_c = matrix_generation_c(program)
+        (
+            matrix_eq,
+            vector_b_eq,
+            quadratic_eq,
+            matrix_ineq,
+            vector_b_ineq,
+            quadratic_ineq,
+        ) = matrix_generation_a_b_Q(program)
+        vector_c, indep_terms_c, quadratic_objective, alone_term_c = (
+            matrix_generation_c_Q(program)
+        )
         program.free_factors_objectives()
 
         self.program = program
@@ -231,13 +259,20 @@ class GbomlGraph:
         self.vector_c = vector_c
         self.indep_term_c = indep_terms_c
         self.alone_term_c = alone_term_c
+        self.quadratic_eq = quadratic_eq
+        self.quadratic_ineq = quadratic_ineq
+        self.quadratic_objective = quadratic_objective
 
-    def __solve(self, solver_function):
+    def __solve(self, solver_function, solver_supports_quadratic=False):
         """
         bound method solving the optimization model
 
         Args:
            solver_function (function) : function calling a solver
+           solver_supports_quadratic (bool) : whether the solver called accepts
+                                              the constraints and objectives
+                                              holding a product of two
+                                              variables
 
         Returns:
             solution (ndarray) : flattened solution
@@ -253,11 +288,28 @@ class GbomlGraph:
             (*) depending on the solver
 
         """
+        if solver_supports_quadratic is False and has_quadratic_terms(
+            self.quadratic_eq, self.quadratic_ineq, self.quadratic_objective
+        ):
+            error_(
+                "The solver considered does not support the constraints "
+                "and objectives holding a product of two variables"
+            )
+
         vector_c = np.asarray(self.vector_c.sum(axis=0), dtype=float)
         objective_offset = float(self.indep_term_c.sum())+self.alone_term_c
-        return solver_function(self.matrix_a_eq, self.matrix_b_eq,
-                               self.matrix_a_ineq, self.matrix_b_ineq, vector_c,
-                               objective_offset, self.program.get_tuple_name())
+        return solver_function(
+            self.matrix_a_eq,
+            self.matrix_b_eq,
+            self.quadratic_eq,
+            self.matrix_a_ineq,
+            self.matrix_b_ineq,
+            self.quadratic_ineq,
+            vector_c,
+            objective_offset,
+            self.quadratic_objective,
+            self.program.get_tuple_name(),
+        )
 
     def solve_gurobi(self, opt_file: str = None, details=False):
         """
@@ -276,11 +328,25 @@ class GbomlGraph:
             variables_information (dict) : dict of additional information concerning variables
 
         """
-        gurobi_solver_function = \
-            lambda matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset, name_tuples: \
-            gurobi_solver(matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset,
-                          name_tuples, opt_file, details)
-        return self.__solve(gurobi_solver_function)
+        gurobi_solver_function = (
+            lambda matrix_a_eq, vector_b_eq, quadratic_eq, matrix_a_ineq, vector_b_ineq, quadratic_ineq, vector_c, objective_offset, quadratic_objective, name_tuples: (
+                gurobi_solver(
+                    matrix_a_eq,
+                    vector_b_eq,
+                    quadratic_eq,
+                    matrix_a_ineq,
+                    vector_b_ineq,
+                    quadratic_ineq,
+                    vector_c,
+                    objective_offset,
+                    quadratic_objective,
+                    name_tuples,
+                    opt_file,
+                    details,
+                )
+            )
+        )
+        return self.__solve(gurobi_solver_function, supports_quadratic(gurobi_solver))
 
     def solve_cplex(self, opt_file: str = None, details=False, opt_dict = None):
         """
@@ -300,11 +366,26 @@ class GbomlGraph:
             variables_information (dict) : dict of additional information concerning variables
 
         """
-        cplex_solver_function = \
-            lambda matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset, name_tuples: \
-                cplex_solver(matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset,
-                              name_tuples, opt_file=opt_file, details=details, option_dict=opt_dict)
-        return self.__solve(cplex_solver_function)
+        cplex_solver_function = (
+            lambda matrix_a_eq, vector_b_eq, quadratic_eq, matrix_a_ineq, vector_b_ineq, quadratic_ineq, vector_c, objective_offset, quadratic_objective, name_tuples: (
+                cplex_solver(
+                    matrix_a_eq,
+                    vector_b_eq,
+                    quadratic_eq,
+                    matrix_a_ineq,
+                    vector_b_ineq,
+                    quadratic_ineq,
+                    vector_c,
+                    objective_offset,
+                    quadratic_objective,
+                    name_tuples,
+                    opt_file=opt_file,
+                    details=details,
+                    option_dict=opt_dict,
+                )
+            )
+        )
+        return self.__solve(cplex_solver_function, supports_quadratic(cplex_solver))
 
     def solve_xpress(self, opt_file: str = None, details=False):
         """
@@ -322,11 +403,25 @@ class GbomlGraph:
             constraints_information (dict) : dict of additional information concerning constraints
             variables_information (dict) : dict of additional information concerning variables
         """
-        xpress_solver_function = \
-            lambda matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset, name_tuples: \
-                xpress_solver(matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset,
-                              name_tuples, opt_file, details)
-        return self.__solve(xpress_solver_function)
+        xpress_solver_function = (
+            lambda matrix_a_eq, vector_b_eq, quadratic_eq, matrix_a_ineq, vector_b_ineq, quadratic_ineq, vector_c, objective_offset, quadratic_objective, name_tuples: (
+                xpress_solver(
+                    matrix_a_eq,
+                    vector_b_eq,
+                    quadratic_eq,
+                    matrix_a_ineq,
+                    vector_b_ineq,
+                    quadratic_ineq,
+                    vector_c,
+                    objective_offset,
+                    quadratic_objective,
+                    name_tuples,
+                    opt_file,
+                    details,
+                )
+            )
+        )
+        return self.__solve(xpress_solver_function, supports_quadratic(xpress_solver))
 
     def solve_clp(self):
         """
@@ -339,7 +434,7 @@ class GbomlGraph:
             solver_info (dict) : dictionary storing solver information
 
         """
-        return self.__solve(clp_solver)
+        return self.__solve(clp_solver, supports_quadratic(clp_solver))
 
     def solve_cbc(self, opt_file=None, opt_dict=None):
         """
@@ -361,12 +456,26 @@ class GbomlGraph:
         """
         if opt_dict is None:
             opt_dict = dict()
-        cbc_solver_function = \
-            lambda matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset, name_tuples: \
-                cbc_solver(matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset,
-                           name_tuples, opt_file=opt_file, option_dict=opt_dict)
+        cbc_solver_function = (
+            lambda matrix_a_eq, vector_b_eq, quadratic_eq, matrix_a_ineq, vector_b_ineq, quadratic_ineq, vector_c, objective_offset, quadratic_objective, name_tuples: (
+                cbc_solver(
+                    matrix_a_eq,
+                    vector_b_eq,
+                    quadratic_eq,
+                    matrix_a_ineq,
+                    vector_b_ineq,
+                    quadratic_ineq,
+                    vector_c,
+                    objective_offset,
+                    quadratic_objective,
+                    name_tuples,
+                    opt_file=opt_file,
+                    option_dict=opt_dict,
+                )
+            )
+        )
 
-        return self.__solve(cbc_solver_function)
+        return self.__solve(cbc_solver_function, supports_quadratic(cbc_solver))
 
     def solve_highs(self):
         """
@@ -380,7 +489,7 @@ class GbomlGraph:
 
         """
 
-        return self.__solve(highs_solver)
+        return self.__solve(highs_solver, supports_quadratic(highs_solver))
 
     def solve_dsp(self, algorithm="dw"):
         """
@@ -398,14 +507,26 @@ class GbomlGraph:
 
         """
 
-        dsp_solver_function = \
-            lambda matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset, name_tuples:\
-                dsp_solver(matrix_a_eq, vector_b_eq, matrix_a_ineq, vector_b_ineq, vector_c, objective_offset,
-                           name_tuples, self.program.
-                           get_first_level_constraints_decomposition(),
-                           algorithm=algorithm)
+        dsp_solver_function = (
+            lambda matrix_a_eq, vector_b_eq, quadratic_eq, matrix_a_ineq, vector_b_ineq, quadratic_ineq, vector_c, objective_offset, quadratic_objective, name_tuples: (
+                dsp_solver(
+                    matrix_a_eq,
+                    vector_b_eq,
+                    quadratic_eq,
+                    matrix_a_ineq,
+                    vector_b_ineq,
+                    quadratic_ineq,
+                    vector_c,
+                    objective_offset,
+                    quadratic_objective,
+                    name_tuples,
+                    self.program.get_first_level_constraints_decomposition(),
+                    algorithm=algorithm,
+                )
+            )
+        )
 
-        return self.__solve(dsp_solver_function)
+        return self.__solve(dsp_solver_function, supports_quadratic(dsp_solver))
 
     def turn_solution_to_list(self, solution, constraints_info=None):
         """
@@ -419,8 +540,14 @@ class GbomlGraph:
             Returns:
                 output_list (list): list of <name, value> tuples
         """
-        list_names, list_values = generate_list_values_tuple(self.program, solution, self.vector_c,
-                                                             self.indep_term_c, constraints_info=constraints_info)
+        list_names, list_values = generate_list_values_tuple(
+            self.program,
+            solution,
+            self.vector_c,
+            self.indep_term_c,
+            self.quadratic_objective,
+            constraints_info=constraints_info,
+        )
         output_list = list(zip(list_names, list_values))
         return output_list
 
@@ -450,9 +577,18 @@ class GbomlGraph:
         if variables_info is None:
             variables_info = dict()
 
-        return generate_json(self.program, solver_data, status,
-                             solution, objective, self.vector_c,
-                             self.indep_term_c, constraint_info, variables_info)
+        return generate_json(
+            self.program,
+            solver_data,
+            status,
+            solution,
+            objective,
+            self.vector_c,
+            self.indep_term_c,
+            self.quadratic_objective,
+            constraint_info,
+            variables_info,
+        )
 
     def add_global_parameters_objects(self, global_parameters):
         """

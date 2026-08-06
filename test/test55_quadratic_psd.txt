@@ -1,0 +1,12 @@
+#TIMEHORIZON
+T = 2;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+internal : y[T];
+#CONSTRAINTS
+sum_fixed: x[t] + y[t] == 6;
+#OBJECTIVES
+// (x - y)**2 is positive semi-definite, so this needs no bound on x nor on y
+min psd: (x[t] - y[t]) * (x[t] - y[t]);
