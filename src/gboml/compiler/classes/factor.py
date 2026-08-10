@@ -908,18 +908,6 @@ class Factorize:
 
             return
 
-        self.gather(block, valid)
-
-
-    def gather(self, block, valid):
-        """
-        gather function : reads the rows of the problem off the block, keeping
-        only the rows whose variable indexes all landed in bounds
-        INPUT:  block -> Block object
-                valid -> ndarray of the rows to keep
-        OUTPUT: None
-        """
-
         nb_rows = int(np.count_nonzero(valid))
         rows = np.arange(nb_rows)
 
