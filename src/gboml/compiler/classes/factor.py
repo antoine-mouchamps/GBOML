@@ -238,18 +238,6 @@ class VariableNode(Node):
         return Block(nb_rows, 0.0, [LinearTerm(1.0, columns, 1)], valid=valid)
 
 
-class NegationNode(Node):
-    __slots__ = ("child",)
-
-    def __init__(self, child):
-
-        self.child = child
-
-    def evaluate(self, context) -> Block:
-
-        return self.child.evaluate(context).negated()
-
-
 class AdditionNode(Node):
     """A run of + and - gathered in one node, so the terms of a long sum of
     products are concatenated once instead of once per operand."""
@@ -307,8 +295,10 @@ class DivisionNode(Node):
 
         numerator = self.numerator.evaluate(context)
         denominator = self.denominator.evaluate(context)
+        block = numerator.scaled(1.0 / denominator.constant)
+        block.valid = combine_valid(block.valid, denominator.valid)
 
-        return numerator.scaled(1.0 / denominator.constant)
+        return block
 
 
 class PowerNode(Node):
@@ -393,30 +383,16 @@ class SumNode(Node):
 
         # every index enclosing the sum is repeated so that it holds one value
         # per (row, index of the sum) pair, the shape everything inside the sum
-        # is evaluated at. The index of the sum may shadow an enclosing one, in
-        # which case the enclosing binding is hidden inside the sum and put
-        # back untouched on the way out
-        definitions = context.definitions
+        # is evaluated at.
         enclosing = [name for name in context.index_names if name != self.index_name]
-        saved = [
-            [name, definitions.get(name)] for name in enclosing + [self.index_name]
-        ]
-
+        definitions = dict(context.definitions)
         for name in enclosing:
             definitions[name] = np.repeat(definitions[name], nb_cells)
         definitions[self.index_name] = np.asarray(index_range.reshape(-1), dtype=int)
 
         inner = Context(definitions, nb_rows * nb_cells, enclosing + [self.index_name])
         padding = self.apply_condition(inner, padding)
-
-        try:
-            block = self.child.evaluate(inner)
-        finally:
-            for name, value in saved:
-                if value is None:
-                    definitions.pop(name, None)
-                else:
-                    definitions[name] = value
+        block = self.child.evaluate(inner)
 
         return self.fold(block, nb_rows, nb_cells, padding)
 
@@ -573,7 +549,7 @@ def build_node(expression, variables, constants, collected_variables):
         return ConstantNode(expression), False
 
     if e_type == "u-":
-        return NegationNode(sub_nodes[0][0]), True
+        return AdditionNode([[-1, sub_nodes[0][0]]]), True
 
     if e_type == "+" or e_type == "-":
         return AdditionNode(_flatten_addition(sub_nodes, e_type)), True
