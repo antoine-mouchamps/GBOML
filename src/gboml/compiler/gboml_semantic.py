@@ -348,11 +348,8 @@ def check_expressions_dependency_link(link: Hyperedge,
         if var_in_right is False and var_in_left is False:
             error_("No variable in constraint at line " + str(cons.get_line()))
 
-        degree = max(
-            expression_degree(rhs, variables, parameters_obj),
-            expression_degree(lhs, variables, parameters_obj),
-        )
-        cons.set_quadratic(degree == 2)
+        expression_degree(rhs, variables, parameters_obj)
+        expression_degree(lhs, variables, parameters_obj)
 
 
 def check_expressions_dependency(node: Node,
@@ -376,16 +373,12 @@ def check_expressions_dependency(node: Node,
         if var_in_right is False and var_in_left is False:
             error_("No variable in constraint at line " + str(cons.get_line()))
 
-        degree = max(
-            expression_degree(rhs, variables, parameters_obj),
-            expression_degree(lhs, variables, parameters_obj),
-        )
-        cons.set_quadratic(degree == 2)
+        expression_degree(rhs, variables, parameters_obj)
+        expression_degree(lhs, variables, parameters_obj)
 
     objectives = node.get_objectives()
     for obj in objectives:
-        degree = expression_degree(obj.get_expression(), variables, parameters_obj)
-        obj.set_quadratic(degree == 2)
+        expression_degree(obj.get_expression(), variables, parameters_obj)
 
 
 def degree_error(e_type: str, degree: int, children: list):

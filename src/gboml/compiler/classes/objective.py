@@ -27,7 +27,6 @@ class Objective(Type):
         self.time_interval = time_interval
         self.condition = condition
         self.name = name
-        self.quadratic = False
 
     def __str__(self):
 
@@ -37,14 +36,6 @@ class Objective(Type):
 
     def get_name(self):
         return self.name
-
-    def is_quadratic(self) -> bool:
-
-        return self.quadratic
-
-    def set_quadratic(self, predicate: bool):
-
-        self.quadratic = predicate
 
     def get_expression(self):
         

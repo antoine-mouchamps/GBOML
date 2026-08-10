@@ -45,7 +45,6 @@ class Constraint(Type):
         self.lhs = lhs
         self.time_interval = time_interval
         self.condition = condition
-        self.quadratic = False
 
     def __str__(self) -> str:
 
@@ -64,14 +63,6 @@ class Constraint(Type):
 
     def set_name(self, name):
         self.name = name
-
-    def is_quadratic(self) -> bool:
-
-        return self.quadratic
-
-    def set_quadratic(self, predicate: bool):
-
-        self.quadratic = predicate
 
     def get_time_interval(self):
 

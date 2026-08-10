@@ -698,7 +698,6 @@ class Factorize:
         self.variables = []
         self.line = obj.get_line()
         self.type_fact = "objective" if type(obj) == Objective else "constraint"
-        self.is_quadratic = False
         self.extension_type = ""
         self.sparse = None
         self.independent_terms = []
@@ -756,7 +755,6 @@ class Factorize:
             constraint.get_rhs(), variables, constants, self.variables
         )
         self.node = AdditionNode([[1, left], [-1, right]])
-        self.is_quadratic = constraint.is_quadratic()
 
     def factorize_objective(self, variables, constants):
         """
@@ -771,7 +769,6 @@ class Factorize:
         self.node, _ = build_node(
             objective.get_expression(), variables, constants, self.variables
         )
-        self.is_quadratic = objective.is_quadratic()
 
     def row_range(self, gl):
         """
