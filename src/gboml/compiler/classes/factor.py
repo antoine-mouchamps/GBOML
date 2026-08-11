@@ -59,7 +59,7 @@ class ByteArray:
         self.array = np.ones(length, dtype=bool)
 
     def intersect_inplace(self, values):
-        self.array = self.array & values
+        self.array &= values
 
 
 def __f_index2__(expr, all_index, name):
