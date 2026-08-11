@@ -16,55 +16,18 @@ the constraint expands to at once. It holds
     valid      the rows whose variable indexes all landed in bounds
 
 A *term* is a rectangle of `width` entries per row : `values` and one column
-array per variable of the product, all broadcastable to `(nb_rows, width)`.
-One column makes a degree one term, two a degree two term.
+array per variable of the product. One column makes a degree one term, two a
+degree two term.
+
+**Every value a block holds is an array of shape `(nb_rows or 1, width or 1)`, a
+constant being one of width one.** An axis of length one stands for a value
+which is the same all along it, so a coefficient that does not depend on the
+index stays a single number all the way to the assembly, where the flat arrays
+are allocated once.
 """
 
 import numpy as np  # type: ignore
 from scipy.sparse import coo_array  # type: ignore
-
-
-def is_scalar(value) -> bool:
-
-    return not isinstance(value, np.ndarray)
-
-
-def per_row(value, nb_rows):
-    """
-    per_row function : gives a value the trailing axis that lines it up with
-                       one row of a (nb_rows, width) rectangle, so that it
-                       applies to every entry of that row at once
-    INPUT:  value -> scalar or ndarray of shape (nb_rows,)
-            nb_rows -> number of rows
-    OUTPUT: scalar or ndarray of shape (nb_rows, 1), keeping the type it came
-            in, so that a column stays an index and does not become a float
-    """
-
-    if is_scalar(value):
-        return value
-
-    return value.reshape(nb_rows, 1)
-
-
-def materialize(value, shape, dtype=float):
-    """
-    materialize function : turns a value into the full array it stands for
-    INPUT:  value -> scalar or ndarray broadcastable to shape
-            shape -> shape of the array returned, (nb_rows,) for a constant and
-                     (nb_rows, width) for a term entry
-            dtype -> type of the array returned
-    OUTPUT: ndarray of the given shape, a read only view whenever the value had
-            to be stretched
-    """
-
-    if is_scalar(value):
-        return np.full(shape, value, dtype=dtype)
-
-    array = np.asarray(value, dtype=dtype)
-    if array.shape == shape:
-        return array
-
-    return np.broadcast_to(array, shape)
 
 
 def combine_valid(first, second):
@@ -86,7 +49,7 @@ class Term:
     One rectangle of entries : `width` products per row, each of them the
     product of the variables at `columns` scaled by `values`. `columns` is a
     sequence of one column array for a degree one term, of two for a degree two
-    one.
+    one. `values` and every column are of shape (nb_rows or 1, width or 1).
     """
 
     __slots__ = ("columns", "values", "width")
@@ -119,8 +82,8 @@ class Block:
 
     __slots__ = ("nb_rows", "constant", "linear", "quadratic", "valid")
 
-    def __init__(self, nb_rows, constant=0.0, linear=None, quadratic=None, valid=None):
-
+    def __init__(self, nb_rows, constant, linear=None, quadratic=None, valid=None):
+        assert constant.ndim == 2
         self.nb_rows = nb_rows
         self.constant = constant
         self.linear = linear if linear is not None else []
@@ -133,16 +96,17 @@ class Block:
         of_constant function : the block a subexpression holding no variable
                                reduces to. The compiled expression gives back a
                                scalar, a 0-d array for a parameter read at a
-                               constant index, or one value per row.
+                               constant index, or one value per row, and the
+                               three of them normalize to the same two shapes
         INPUT:  nb_rows -> number of rows
                 value -> the value the compiled expression evaluated to
                 valid -> mask of the rows still valid, or None
         OUTPUT: Block
         """
 
-        if not is_scalar(value):
-            array = np.asarray(value, dtype=float)
-            value = float(array) if array.ndim == 0 else array
+        value = np.asarray(value, dtype=float)
+        # a single value becomes (1, 1) and one value per row (nb_rows, 1)
+        value = value.reshape(value.shape + (1,) * (2 - value.ndim))
 
         return Block(nb_rows, value, valid=valid)
 
@@ -158,10 +122,16 @@ class Block:
         OUTPUT: Block
         """
 
-        if not is_scalar(columns):
-            columns = per_row(np.asarray(columns, dtype=int), nb_rows)
+        columns = np.asarray(columns, dtype=int)
+        # a single column becomes (1, 1) and one column per row (nb_rows, 1)
+        columns = columns.reshape(columns.shape + (1,) * (2 - columns.ndim))
 
-        return Block(nb_rows, 0.0, [Term(1.0, (columns,), 1)], valid=valid)
+        return Block(
+            nb_rows,
+            np.zeros((1, 1)),
+            [Term(np.ones((1, 1)), (columns,), 1)],
+            valid=valid,
+        )
 
     def degree(self) -> int:
         """The degree of the expression with respect to the variables."""
@@ -186,18 +156,16 @@ class Block:
     def scaled(self, factor):
         """
         scaled function : multiplies the whole polynomial by a value which does
-                          not depend on the variables, one per row at most
-        INPUT:  factor -> scalar or ndarray of shape (nb_rows,)
+                          not depend on the variables, one per row at most.
+        INPUT:  factor -> ndarray of shape (nb_rows or 1, 1)
         OUTPUT: Block
         """
-
-        row_factor = per_row(factor, self.nb_rows)
 
         return Block(
             self.nb_rows,
             self.constant * factor,
-            [term.scaled(row_factor) for term in self.linear],
-            [term.scaled(row_factor) for term in self.quadratic],
+            [term.scaled(factor) for term in self.linear],
+            [term.scaled(factor) for term in self.quadratic],
             self.valid,
         )
 
@@ -216,13 +184,17 @@ class Block:
         flat_padding = padding.reshape(-1)
 
         constant = self.constant
-        if not is_scalar(constant):
-            constant = np.where(flat_padding, 0.0, constant)
-            constant = constant.reshape(nb_rows, nb_cells).sum(axis=1)
-        elif has_padding:
-            constant = constant * (~padding).sum(axis=1)
+        if constant.shape[0] == 1:
+            # the same value on every (row, cell) pair, so folding it is
+            # counting the cells it lands on
+            if has_padding:
+                constant = constant * np.logical_not(padding).sum(axis=1, keepdims=True)
+            else:
+                constant = constant * nb_cells
         else:
-            constant = constant * nb_cells
+            if has_padding:
+                constant = np.where(flat_padding[:, None], 0.0, constant)
+            constant = constant.reshape(nb_rows, nb_cells).sum(axis=1, keepdims=True)
 
         valid = self.valid
         if valid is not None:
@@ -240,19 +212,17 @@ class Block:
 
         return Block(nb_rows, constant, fold(self.linear), fold(self.quadratic), valid)
 
-    def constant_over(self, valid, nb_rows):
+    def constant_over(self, valid):
         """
         constant_over function : the degree zero part as one value per row the
-                                 mask keeps
+                                 mask keeps. This is the boundary the rank two
+                                 shape stops at, the matrices being built from
+                                 a flat vector
         INPUT:  valid -> mask over the rows of the block
-                nb_rows -> number of rows the mask keeps
-        OUTPUT: ndarray of shape (nb_rows,)
+        OUTPUT: ndarray of shape (number of rows the mask keeps,)
         """
 
-        if is_scalar(self.constant):
-            return materialize(self.constant, (nb_rows,))
-
-        return self.constant[valid]
+        return np.broadcast_to(self.constant, (self.nb_rows, 1))[valid, 0]
 
     def assemble(self, valid, nb_rows):
         """
@@ -285,12 +255,12 @@ def add_blocks(blocks):
         return blocks[0]
 
     nb_rows = blocks[0].nb_rows
-    constant = 0.0
-    linear = []
-    quadratic = []
-    valid = None
-    for block in blocks:
-        constant += block.constant
+    constant = blocks[0].constant
+    linear = list(blocks[0].linear)
+    quadratic = list(blocks[0].quadratic)
+    valid = blocks[0].valid
+    for block in blocks[1:]:
+        constant = constant + block.constant
         linear += block.linear
         quadratic += block.quadratic
         valid = combine_valid(valid, block.valid)
@@ -317,13 +287,13 @@ def multiply_blocks(left, right):
         return Block(nb_rows, *_scaled_parts(left, right.constant), valid=valid)
 
     constant = left.constant * right.constant
-    linear = [term.scaled(per_row(right.constant, nb_rows)) for term in left.linear]
-    linear += [term.scaled(per_row(left.constant, nb_rows)) for term in right.linear]
+    linear = [term.scaled(right.constant) for term in left.linear]
+    linear += [term.scaled(left.constant) for term in right.linear]
 
     quadratic = []
     for left_term in left.linear:
         for right_term in right.linear:
-            quadratic.append(_outer_product(left_term, right_term, nb_rows))
+            quadratic.append(_outer_product(left_term, right_term))
 
     return Block(nb_rows, constant, linear, quadratic, valid)
 
@@ -331,51 +301,37 @@ def multiply_blocks(left, right):
 def _scaled_parts(block, factor):
     """The parts of a block scaled by a constant."""
 
-    row_factor = per_row(factor, block.nb_rows)
-
     return (
         block.constant * factor,
-        [term.scaled(row_factor) for term in block.linear],
-        [term.scaled(row_factor) for term in block.quadratic],
+        [term.scaled(factor) for term in block.linear],
+        [term.scaled(factor) for term in block.quadratic],
     )
 
 
-def _outer_product(left_term, right_term, nb_rows):
+def _outer_product(left_term, right_term):
     """
     _outer_product function : every entry of one degree one term multiplied by
     every entry of the other, giving a degree two term of the product of both
     widths.
+
     INPUT:  left_term, right_term -> degree one Term objects
-            nb_rows -> number of rows
     OUTPUT: degree two Term
     """
 
     [left_columns] = left_term.columns
     [right_columns] = right_term.columns
-    if left_term.width == 1 and right_term.width == 1:
-        return Term(
-            left_term.values * right_term.values,
-            (left_columns, right_columns),
-            1,
-        )
-
+    pairs = (left_term.width, right_term.width)
     width = left_term.width * right_term.width
-    left_values = materialize(left_term.values, (nb_rows, left_term.width))
-    right_values = materialize(right_term.values, (nb_rows, right_term.width))
-    left_columns = materialize(left_columns, (nb_rows, left_term.width), dtype=int)
-    right_columns = materialize(right_columns, (nb_rows, right_term.width), dtype=int)
 
-    values = left_values[:, :, None] * right_values[:, None, :]
-    columns_i = np.broadcast_to(
-        left_columns[:, :, None], (nb_rows, left_term.width, right_term.width)
-    )
-    columns_j = np.broadcast_to(
-        right_columns[:, None, :], (nb_rows, left_term.width, right_term.width)
-    )
+    def over_pairs(value):
+        return np.broadcast_to(value, (value.shape[0],) + pairs).reshape(-1, width)
 
     return Term(
-        values.reshape(nb_rows, width),
-        (columns_i.reshape(nb_rows, width), columns_j.reshape(nb_rows, width)),
+        over_pairs(left_term.values[:, :, None] * right_term.values[:, None, :]),
+        (
+            over_pairs(left_columns[:, :, None]),
+            over_pairs(right_columns[:, None, :]),
+        ),
         width,
     )
 
@@ -392,25 +348,29 @@ def _folded_term(term, nb_rows, nb_cells, flat_padding, has_padding):
     """
 
     width = nb_cells * term.width
-    inner_shape = (nb_rows * nb_cells, term.width)
+    inner_rows = nb_rows * nb_cells
 
     values = term.values
     if has_padding:
         # zeroing the value is what makes a padded entry inert, whatever the
         # column it carries
-        values = materialize(values, inner_shape)
         values = np.where(flat_padding[:, None], 0.0, values)
 
-    def fold(value, dtype):
+    def fold(value):
+        """
+        The entries of the folded term run over the (cell, entry) pairs. A
+        value which is the same on every inner row is the same on every cell
+        too, so it only has to be laid out over the entries it already had.
+        """
 
-        if is_scalar(value):
-            return value
+        if value.shape[0] == 1:
+            return value if value.shape[1] == 1 else np.tile(value, (1, nb_cells))
 
-        return materialize(value, inner_shape, dtype=dtype).reshape(nb_rows, width)
+        return np.broadcast_to(value, (inner_rows, term.width)).reshape(nb_rows, width)
 
     return Term(
-        fold(values, float),
-        tuple(fold(columns, int) for columns in term.columns),
+        fold(values),
+        tuple(fold(columns) for columns in term.columns),
         width,
     )
 
@@ -444,7 +404,7 @@ def _gather_nonzero_terms(terms, valid, block_nb_rows):
     terms.reverse()
     while terms:
         term = terms.pop()
-        values = materialize(term.values, (block_nb_rows, term.width))
+        values = np.broadcast_to(term.values, (block_nb_rows, term.width))
         if not keep_every_row:
             values = values[valid]
 
@@ -455,12 +415,7 @@ def _gather_nonzero_terms(terms, valid, block_nb_rows):
         gathered[0].append(kept_rows)
         gathered[1].append(values[kept_rows, kept_entries])
         for index, columns in enumerate(term.columns, start=2):
-            if is_scalar(columns):
-                # the same column for every entry, no rectangle to build
-                gathered[index].append(np.full(len(kept_rows), columns, dtype=int))
-                continue
-
-            rectangle = materialize(columns, (block_nb_rows, term.width), dtype=int)
+            rectangle = np.broadcast_to(columns, (block_nb_rows, term.width))
             if not keep_every_row:
                 rectangle = rectangle[valid]
             gathered[index].append(rectangle[kept_rows, kept_entries])

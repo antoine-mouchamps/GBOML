@@ -215,8 +215,6 @@ class VariableNode(Node):
                     valid, np.broadcast_to(in_bounds, (nb_rows,)).copy()
                 )
                 offset = np.clip(offset, 0, max(self.size - 1, 0))
-            if offset.ndim == 0:
-                offset = int(offset)
 
         return Block.of_variable(nb_rows, offset + self.index, valid)
 
@@ -700,8 +698,8 @@ class Factorize:
         if self.type_fact == "constraint":
             # the matrix holds the coefficients of the left hand side minus the
             # right hand side, so the independent term moves to the other side
-            self.independent_terms = -block.constant_over(valid, nb_rows)
+            self.independent_terms = -block.constant_over(valid)
         else:
-            self.independent_terms = block.constant_over(valid, nb_rows)
+            self.independent_terms = block.constant_over(valid)
 
         self.sparse, self.quadratic_terms = block.assemble(valid, nb_rows)
