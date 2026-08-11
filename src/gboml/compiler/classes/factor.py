@@ -32,22 +32,9 @@ every variable index landed in bounds, so they do not invalidate their row.
 """
 
 import numpy as np  # type: ignore
-from scipy.sparse import coo_array  # type: ignore
 
 from gboml.compiler.utils import error_
-from .block import (
-    Block,
-    LinearTerm,
-    add_blocks,
-    multiply_blocks,
-    as_rows,
-    as_column,
-    materialize,
-    combine_valid,
-    is_scalar,
-)
-from .constraint import Constraint
-from .expression import Expression
+from .block import Block, add_blocks, combine_valid, multiply_blocks
 from .identifier import Identifier
 from .objective import Objective
 
@@ -193,7 +180,7 @@ class ConstantNode(Node):
 
         value, valid = context.evaluate(self.python_expression)
 
-        return Block(context.nb_rows, as_rows(value, context.nb_rows), valid=valid)
+        return Block.of_constant(context.nb_rows, value, valid)
 
 
 class VariableNode(Node):
@@ -231,11 +218,7 @@ class VariableNode(Node):
             if offset.ndim == 0:
                 offset = int(offset)
 
-        columns = offset + self.index
-        if not is_scalar(columns):
-            columns = as_column(np.asarray(columns, dtype=int), nb_rows)
-
-        return Block(nb_rows, 0.0, [LinearTerm(1.0, columns, 1)], valid=valid)
+        return Block.of_variable(nb_rows, offset + self.index, valid)
 
 
 class AdditionNode(Node):
@@ -270,12 +253,6 @@ class MultiplicationNode(Node):
 
         left = self.left.evaluate(context)
         right = self.right.evaluate(context)
-        if left.degree() + right.degree() > 2:
-            error_(
-                "INTERNAL ERROR : a product of degree "
-                + str(left.degree() + right.degree())
-                + " reached the factorization, check the semantic analysis"
-            )
 
         return multiply_blocks(left, right)
 
@@ -315,7 +292,7 @@ class PowerNode(Node):
     def evaluate(self, context) -> Block:
 
         if self.exponent == 0:
-            return Block(context.nb_rows, 1.0)
+            return Block.of_constant(context.nb_rows, 1.0)
 
         block = self.child.evaluate(context)
         result = block
@@ -381,9 +358,10 @@ class SumNode(Node):
                 "Error: no index in the sum at line " + str(self.line) + " is in range"
             )
 
-        # every index enclosing the sum is repeated so that it holds one value
-        # per (row, index of the sum) pair, the shape everything inside the sum
-        # is evaluated at.
+        # inside the sum the rows are the (row, cell) pairs flattened row
+        # major, nb_rows * nb_cells of them. Every index enclosing the sum is
+        # repeated nb_cells times to line up with that, and the index of the
+        # sum runs along the cells
         enclosing = [name for name in context.index_names if name != self.index_name]
         definitions = dict(context.definitions)
         for name in enclosing:
@@ -394,7 +372,7 @@ class SumNode(Node):
         padding = self.apply_condition(inner, padding)
         block = self.child.evaluate(inner)
 
-        return self.fold(block, nb_rows, nb_cells, padding)
+        return block.folded(nb_rows, nb_cells, padding)
 
     def apply_condition(self, inner, padding):
         """
@@ -422,75 +400,6 @@ class SumNode(Node):
         )
 
         return padding | ~kept
-
-    def fold(self, block, nb_rows, nb_cells, padding):
-        """
-        fold function : brings a block evaluated over (row, index of the sum)
-        pairs back to one over rows, by folding the index of the sum into the
-        term axis. A term of `width` entries becomes a term of
-        `nb_cells * width` entries.
-        INPUT:  block -> Block over nb_rows * nb_cells rows
-                nb_rows, nb_cells -> shape the block is folded back to
-                padding -> (nb_rows, nb_cells) mask of the inert entries
-        OUTPUT: Block over nb_rows rows
-        """
-
-        has_padding = padding.any()
-        flat_padding = padding.reshape(-1)
-
-        constant = block.constant
-        if not is_scalar(constant):
-            constant = np.where(flat_padding, 0.0, constant)
-            constant = constant.reshape(nb_rows, nb_cells).sum(axis=1)
-        elif has_padding:
-            constant = constant * (~padding).sum(axis=1)
-        else:
-            constant = constant * nb_cells
-
-        linear = [
-            self.fold_term(term, nb_rows, nb_cells, flat_padding, has_padding)
-            for term in block.linear
-        ]
-        quadratic = [
-            self.fold_term(term, nb_rows, nb_cells, flat_padding, has_padding)
-            for term in block.quadratic
-        ]
-        valid = block.valid
-        if valid is not None:
-            # a padded entry never invalidates the row it sits on
-            valid = (valid.reshape(nb_rows, nb_cells) | padding).all(axis=1)
-            if valid.all():
-                valid = None
-
-        return Block(nb_rows, constant, linear, quadratic, valid)
-
-    def fold_term(self, term, nb_rows, nb_cells, flat_padding, has_padding):
-
-        fields = ["values"] + list(type(term).COLUMN_FIELDS)
-        width = nb_cells * term.width
-        inner_rows = nb_rows * nb_cells
-        values = term.values
-        if has_padding:
-            # zeroing the value is what makes a padded entry inert, whatever
-            # the column it carries
-            values = materialize(values, inner_rows, term.width)
-            values = np.where(flat_padding[:, None], 0.0, values)
-
-        folded = []
-        for name, value in zip(
-            fields, [values] + [getattr(term, other) for other in fields[1:]]
-        ):
-            if is_scalar(value):
-                folded.append(value)
-            else:
-                dtype = float if name == "values" else int
-                folded.append(
-                    materialize(value, inner_rows, term.width, dtype=dtype).reshape(
-                        nb_rows, width
-                    )
-                )
-
-        return type(term)(*folded, width)
 
 
 def build_node(expression, variables, constants, collected_variables):
@@ -562,14 +471,6 @@ def build_node(expression, variables, constants, collected_variables):
 
     if e_type == "**":
         exponent = children[1].evaluate_as_constant_integer(constants)
-        if exponent is None or exponent < 0:
-            error_(
-                "INTERNAL ERROR : the exponent at line "
-                + str(expression.get_line())
-                + " is not a constant non "
-                "negative integer, check the semantic analysis"
-            )
-
         return PowerNode(sub_nodes[0][0], exponent), True
 
     error_(
@@ -602,87 +503,6 @@ def _flatten_addition(sub_nodes, e_type):
     return flattened
 
 
-def gather_nonzero_terms(terms, valid, rows, block_nb_rows):
-    """
-    gather_nonzero_terms function : turns a list of terms into a flat
-    arrays, keeping
-    only the entries whose value is not zero.
-
-    Terms are handled one at a time. For each term, its values are turned into
-    a (row, entry) rectangle first and reduced to the positions that are not
-    zero; the term's columns are then read only at those same positions.
-    INPUT:  terms -> non empty list of LinearTerm or QuadraticTerm objects
-            valid -> ndarray, the rows to keep
-            rows -> ndarray, the row number each kept entry lands on, one
-                    entry per row valid keeps
-            block_nb_rows -> number of rows the terms were evaluated at,
-                             before valid narrows them down -- the shape valid
-                             itself indexes against
-    OUTPUT: the rows array, then the values and one array per column of the
-            term type, all of the same length -- one entry per kept
-            (row, term-column) pair
-    """
-
-    fields = [("values", float)] + [
-        (name, int) for name in type(terms[0]).COLUMN_FIELDS
-    ]
-    keep_every_row = bool(valid.all())
-    gathered = [[np.zeros(0, dtype=int)]] + [
-        [np.zeros(0, dtype=dtype)] for _, dtype in fields
-    ]
-
-    def entries(term, name, dtype):
-        rectangle = materialize(
-            getattr(term, name), block_nb_rows, term.width, dtype=dtype
-        )
-
-        return rectangle if keep_every_row else rectangle[valid]
-
-    for term in terms:
-        values = entries(term, *fields[0])
-        kept_rows, kept_entries = np.nonzero(values)
-        if len(kept_entries) == 0:
-            continue
-
-        gathered[0].append(rows[kept_rows])
-        gathered[1].append(values[kept_rows, kept_entries])
-        for index, field in enumerate(fields[1:], start=2):
-            gathered[index].append(entries(term, *field)[kept_rows, kept_entries])
-
-    return tuple(np.concatenate(arrays) for arrays in gathered)
-
-
-def build_sparse_array(terms, valid, rows, nb_rows, block_nb_rows):
-    """
-    build_sparse_array function : build the terms of a block as a coo_array
-    whose first axis is the row and whose other axes are the term's own
-    COLUMN_FIELDS. Entries at the same (row, *columns) tuple in more than
-    one term are summed and cancelled by sum_duplicates/eliminate_zeros.
-    INPUT:  terms -> list of LinearTerm or QuadraticTerm objects
-            valid, rows, nb_rows, block_nb_rows
-    OUTPUT: coo_array of shape (nb_rows, *ncols), or None when `terms` is empty
-    """
-
-    if not terms:
-        return None
-
-    term_rows, values, *columns = gather_nonzero_terms(
-        terms, valid, rows, block_nb_rows
-    )
-    if len(columns) == 2:
-        # a product is commutative so x * y and y * x are the very same entry.
-        columns = [np.minimum(*columns), np.maximum(*columns)]
-    # indices are never negative, so a column's max is its ncols - 1
-    # whenever it holds any, and the initial floor of 0 gives ncols = 1 when it
-    # does not
-    shape = (nb_rows,) + tuple(int(column.max(initial=0)) + 1 for column in columns)
-    sparse = coo_array((values, (term_rows, *columns)), shape=shape)
-    sparse.sum_duplicates()
-    sparse.eliminate_zeros()
-
-    return sparse
-
-
 class Factorize:
     """
     Factorize object factorizes a constraint or an objective of any
@@ -710,11 +530,6 @@ class Factorize:
     def get_line(self):
 
         return self.line
-
-    def free(self):
-
-        self.node = None
-        self.obj = None
 
     def free_extension(self):
         """
@@ -843,8 +658,7 @@ class Factorize:
         gl[name_index] = index_values
 
         if nb_rows == 0:
-            # a part is None exactly when it holds no entry, which is what
-            # build_sparse_array returns for a degree the block never met
+            # a part is None exactly when it holds no entry
             self.sparse = None
             self.quadratic_terms = None
             self.independent_terms = np.zeros(0)
@@ -882,24 +696,12 @@ class Factorize:
             return
 
         nb_rows = int(np.count_nonzero(valid))
-        rows = np.arange(nb_rows)
-
-        constant = as_rows(block.constant, block.nb_rows)
-        if is_scalar(constant):
-            constant = np.full(nb_rows, constant, dtype=float)
-        else:
-            constant = constant[valid]
 
         if self.type_fact == "constraint":
             # the matrix holds the coefficients of the left hand side minus the
             # right hand side, so the independent term moves to the other side
-            self.independent_terms = -constant
+            self.independent_terms = -block.constant_over(valid, nb_rows)
         else:
-            self.independent_terms = constant
+            self.independent_terms = block.constant_over(valid, nb_rows)
 
-        self.sparse = build_sparse_array(
-            block.linear, valid, rows, nb_rows, block.nb_rows
-        )
-        self.quadratic_terms = build_sparse_array(
-            block.quadratic, valid, rows, nb_rows, block.nb_rows
-        )
+        self.sparse, self.quadratic_terms = block.assemble(valid, nb_rows)
