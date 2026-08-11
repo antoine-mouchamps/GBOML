@@ -159,8 +159,7 @@ class Node:
 
     def free_factors_constraints(self):
         for factor in self.constr_factors:
-            factor.sparse = None
-            factor.independent_terms = None
+            factor.free_extension()
         self.constr_factors = None
 
     def get_constraint_factors(self):
