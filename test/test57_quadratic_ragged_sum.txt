@@ -1,0 +1,26 @@
+// A product whose operands are ragged sums, that is sums over a range which
+// depends on the index of the constraint. Each of them folds to a padded term
+// before they are multiplied, so the padding of each operand has to spread
+// over the entries of the other for the products that carry nothing to be
+// dropped. x is pinned to [1, 2, 3] and y to [4, 5] so every row below is a
+// single known number.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : x[T];
+internal : y[2];
+internal : z[T];
+internal : w[T];
+#CONSTRAINTS
+fix_x : x[i] == i + 1 for i in [0:T-1];
+fix_y : y[j] == j + 4 for j in [0:1];
+// both operands padded : z == (1)^2, (1+2)^2, (1+2+3)^2 == [1, 9, 36]
+sq    : z[t] == sum(x[i] for i in [0:t]) * sum(x[j] for j in [0:t]);
+// one operand padded and the other not, and the two of different widths :
+// w == 1*9, 3*9, 6*9 == [9, 27, 54]
+asym  : w[t] == sum(x[i] for i in [0:t]) * sum(y[j] for j in [0:1]);
+#OBJECTIVES
+// 1 + 9 + 36 == 46
+min c : z[t];

@@ -14,6 +14,7 @@ internal : z_cond[T];
 internal : z_ragged_cond[T];
 internal : z_nested[T];
 internal : z_nested_ragged[T];
+internal : z_body_t[T];
 #CONSTRAINTS
 fix_x       : x[i] == i + 1 for i in [0:N-1];
 // the range ends on the index of the constraint, so every row is shorter
@@ -31,5 +32,9 @@ nested      : z_nested[t] == sum(sum(x[j] for j in [0:i]) for i in [0:2]);
 // [1, 4, 10, 20]
 nested_rag  : z_nested_ragged[t] == sum(sum(x[j] for j in [0:i])
                                         for i in [0:t]);
+// the body reads the index of the constraint, so it has to be laid out over
+// the cells of the sum, unlike every other row above where it appears in the
+// range only : t * (1 + .. + x[t]) == [0, 3, 12, 30]
+body_uses_t : z_body_t[t] == sum(t * x[i] for i in [0:t]);
 #OBJECTIVES
 min c : z_ragged[t];

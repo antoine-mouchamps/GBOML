@@ -1016,6 +1016,37 @@ class CompilerTests(unittest.TestCase):
             self.assertAlmostEqual(variables["z"]["values"][0], 54.0,
                                    places=4)
 
+    def test_quadratic_ragged_sum(self):
+        """ test_quadratic_ragged_sum
+
+        Tests a product whose operands are sums over a range depending on the
+        index of the constraint. Each of them folds to a padded term, the rows
+        of a ragged range being squared off to the longest one, so the padding
+        of each operand has to spread over the entries of the other for the
+        products that carry nothing to be dropped. Getting that wrong adds the
+        padded products to the row rather than dropping them, which is a wrong
+        number and not a crash, so the values are pinned : x is [1, 2, 3] and
+        y is [4, 5], making z == [1, 9, 36] and w == [9, 27, 54]
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test57_quadratic_ragged_sum.txt', "--gurobi",
+             "--json", "--output", "test/test57_quadratic_ragged_sum"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+        with open("test/test57_quadratic_ragged_sum.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            self.assertAlmostEqual(solution["objective"], 46.0, places=4)
+            variables = solution["elements"]["A"]["variables"]
+            for got, expected in zip(variables["z"]["values"], [1.0, 9.0, 36.0]):
+                self.assertAlmostEqual(got, expected, places=4)
+            for got, expected in zip(variables["w"]["values"], [9.0, 27.0, 54.0]):
+                self.assertAlmostEqual(got, expected, places=4)
+
     def test_quadratic_unbounded_variable(self):
         """ test_quadratic_unbounded_variable
 
@@ -1306,6 +1337,22 @@ class CompilerTests(unittest.TestCase):
                                              "nested_ragged")
         self.assertEqual(variables["z_nested_ragged"]["values"],
                          [1.0, 4.0, 10.0, 20.0])
+
+    def test_sum_body_reads_enclosing_index(self):
+        """ test_sum_body_reads_enclosing_index
+
+        Tests a sum whose body reads the index of the constraint, and not only
+        its range. An enclosing index is constant along the cells of the sum,
+        so it has to be laid out over them before the body can be evaluated;
+        the sum only does that for the indexes it actually reads, and this is
+        the shape that tells apart an index it reads from one appearing in the
+        range alone. Getting it wrong raises on the shapes rather than
+        answering a wrong number, but the values are pinned all the same
+
+        """
+        variables = self.solve_sum_semantics("test48_sum_semantics", "body_t")
+        self.assertEqual(variables["z_body_t"]["values"],
+                         [0.0, 3.0, 12.0, 30.0])
 
     def test_sum_in_objective_ragged_range(self):
         """ test_sum_in_objective_ragged_range

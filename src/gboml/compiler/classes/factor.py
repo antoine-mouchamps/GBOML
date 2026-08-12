@@ -2,35 +2,6 @@
 # Bardhyl Miftari, Mathias Berger, Hatim Djelassi, Damien Ernst,
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
-
-"""
-factor.py : turns a constraint or an objective into the rows of the
-problem, whatever its degree with respect to the variables.
-
-The expression is compiled once, index free, into a tree of nodes, and
-every node knows how to evaluate itself into a Block. The rules are the
-algebra of polynomials:
-
-    constant     a subtree holding no variable, evaluated whole
-    variable     one column of the problem
-    - and +      the terms of both sides, gathered
-    *            the degrees add up, the degree two part being the outer
-                 product of the degree one parts
-    /            a scaling, the denominator holding no variable
-    **           repeated multiplication, the exponent being a constant integer
-    sum          the enclosed terms, widened over the range of the sum
-
-Terms landing on the same row are summed by the matrix, so a sum only has to
-lay its range out along the term axis. Nothing is unrolled in python, and a
-sum inside a sum is that same rule applied twice.
-
-A range that depends on an enclosing index is ragged, and is squared off with
-NaN padding by TimeInterval.get_range. Padded entries, and the entries a `where`
-condition rejects, are marked in one `padding` mask: their value is forced to
-zero, so they contribute nothing, and they are excluded from the check that
-every variable index landed in bounds, so they do not invalidate their row.
-"""
-
 import numpy as np  # type: ignore
 
 from gboml.compiler.utils import error_
@@ -307,30 +278,58 @@ class SumNode(Node):
     unrolled here, and the very same rule applies to a sum inside a sum.
     """
 
-    __slots__ = ("child", "time_interval", "index_name", "python_condition", "line")
+    __slots__ = (
+        "child",
+        "expression",
+        "index_name",
+        "line",
+        "python_condition",
+        "time_interval",
+    )
 
-    def __init__(self, child, time_interval, condition, line):
+    def __init__(self, child, expression):
 
         self.child = child
-        self.time_interval = time_interval
-        self.index_name = time_interval.get_index_name()
+        self.expression = expression
+        self.time_interval = expression.get_time_interval()
+        self.index_name = self.time_interval.get_index_name()
+        condition = expression.get_condition()
         self.python_condition = (
             None if condition is None else condition.turn_to_python_expression()
         )
-        self.line = line
+        self.line = expression.get_line()
+
+    def uses_inside(self, name) -> bool:
+        """
+        uses_inside function : whether the body or the condition uses `name`.
+                               The range is left out, being evaluated before
+                               the cells of the sum exist
+        """
+
+        body = self.expression.get_children()[0]
+        if is_index_dependant_expression(body, [name]):
+            return True
+
+        condition = self.expression.get_condition()
+
+        return condition is not None and is_index_dependant_expression(
+            condition, [name]
+        )
 
     def range_of(self, context):
         """
         range_of function : the values of the index, one row per row of the
-        enclosing expression. A range depending on an enclosing index is ragged
-        and comes back NaN-padded, which is reported as a mask rather than
-        left in the values.
+        enclosing expression. A ragged range has rows of different lengths, and
+        get_range brings them to the longest, marking the cells it does not
+        reach with NaN, which becomes the mask here.
         INPUT:  context -> Context object
-        OUTPUT: (nb_rows, nb_cells) values, (nb_rows, nb_cells) padding mask
+        OUTPUT: (nb_rows, nb_cells) array of int, (nb_rows, nb_cells) mask
         """
 
+        # get_range takes its number of rows from the first name it is given,
+        # and only the innermost index is always laid out over every row
         index_range = self.time_interval.get_range(
-            context.definitions, list_indexes=context.index_names
+            context.definitions, list_indexes=context.index_names[-1:]
         )
 
         if not isinstance(index_range, np.ndarray):
@@ -342,48 +341,48 @@ class SumNode(Node):
             index_range = np.broadcast_to(
                 index_range, (context.nb_rows, index_range.shape[0])
             )
-        padding = np.isnan(index_range)
 
-        return np.where(padding, 0.0, index_range), padding
+        filled = np.isfinite(index_range)
+        index_grid = np.zeros(index_range.shape, dtype=int)
+        np.copyto(index_grid, index_range, where=filled, casting="unsafe")
+
+        return index_grid, filled
 
     def evaluate(self, context) -> Block:
 
         nb_rows = context.nb_rows
-        index_range, padding = self.range_of(context)
-        nb_cells = index_range.shape[1]
+        index_grid, filled = self.range_of(context)
+        nb_cells = index_grid.shape[1]
         if nb_cells == 0:
             error_(
                 "Error: no index in the sum at line " + str(self.line) + " is in range"
             )
 
-        # inside the sum the rows are the (row, cell) pairs flattened row
-        # major, nb_rows * nb_cells of them. Every index enclosing the sum is
-        # repeated nb_cells times to line up with that, and the index of the
-        # sum runs along the cells
         enclosing = [name for name in context.index_names if name != self.index_name]
         definitions = dict(context.definitions)
         for name in enclosing:
-            definitions[name] = np.repeat(definitions[name], nb_cells)
-        definitions[self.index_name] = np.asarray(index_range.reshape(-1), dtype=int)
+            if self.uses_inside(name):
+                definitions[name] = np.repeat(definitions[name], nb_cells)
+        definitions[self.index_name] = index_grid.reshape(-1)
 
         inner = Context(definitions, nb_rows * nb_cells, enclosing + [self.index_name])
-        padding = self.apply_condition(inner, padding)
+        filled = self.apply_condition(inner, filled)
         block = self.child.evaluate(inner)
 
-        return block.folded(nb_rows, nb_cells, padding)
+        return block.folded(nb_rows, nb_cells, filled)
 
-    def apply_condition(self, inner, padding):
+    def apply_condition(self, inner, filled):
         """
         apply_condition function : an index the `where` condition rejects is
-        marked as padding, which makes it inert rather than removed. No row has
-        to be re-packed for the ranges to stay rectangular.
+        marked rather than removed, so that no row has to be re-packed for the
+        ranges to stay rectangular.
         INPUT:  inner -> Context object inside the sum
-                padding -> (nb_rows, nb_cells) mask
+                filled -> (nb_rows, nb_cells) mask of the cells kept so far
         OUTPUT: (nb_rows, nb_cells) mask
         """
 
         if self.python_condition is None:
-            return padding
+            return filled
 
         try:
             kept = eval(self.python_condition, inner.definitions, {})
@@ -394,10 +393,10 @@ class SumNode(Node):
             )
 
         kept = np.broadcast_to(np.asarray(kept, dtype=bool), (inner.nb_rows,)).reshape(
-            padding.shape
+            filled.shape
         )
 
-        return padding | ~kept
+        return filled & kept
 
 
 def build_node(expression, variables, constants, collected_variables):
@@ -440,12 +439,7 @@ def build_node(expression, variables, constants, collected_variables):
         if not has_variable:
             return ConstantNode(expression), False
 
-        return SumNode(
-            child,
-            expression.get_time_interval(),
-            expression.get_condition(),
-            expression.get_line(),
-        ), True
+        return SumNode(child, expression), True
 
     sub_nodes = [
         build_node(child, variables, constants, collected_variables)

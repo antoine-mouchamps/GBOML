@@ -2,40 +2,11 @@
 # Bardhyl Miftari, Mathias Berger, Hatim Djelassi, Damien Ernst,
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
-
-"""
-block.py : the value a factorized expression takes once the index of the
-constraint is bound.
-
-A Block is the polynomial an expression reduces to, evaluated over every row
-the constraint expands to at once. It holds
-
-    constant   the degree zero part, one value per row
-    linear     the degree one part, a list of terms
-    quadratic  the degree two part, a list of terms
-    valid      the rows whose variable indexes all landed in bounds
-
-A *term* is a rectangle of `width` entries per row : `values` and one column
-array per variable of the product. One column makes a degree one term, two a
-degree two term.
-
-**Every value a block holds is an array of shape `(nb_rows or 1, width or 1)`, a
-constant being one of width one.** An axis of length one stands for a value
-which is the same all along it, so a coefficient that does not depend on the
-index stays a single number all the way to the assembly, where the flat arrays
-are allocated once.
-"""
-
 import numpy as np  # type: ignore
 from scipy.sparse import coo_array  # type: ignore
 
 
 def combine_valid(first, second):
-    """
-    combine_valid function : intersects two row masks, None standing for the
-                             mask that keeps every row
-    """
-
     if first is None:
         return second
     if second is None:
@@ -49,16 +20,19 @@ class Term:
     One rectangle of entries : `width` products per row, each of them the
     product of the variables at `columns` scaled by `values`. `columns` is a
     sequence of one column array for a degree one term, of two for a degree two
-    one. `values` and every column are of shape (nb_rows or 1, width or 1).
+    one. `filled` is false on the entries a `where` condition rejected and on
+    the ones a ragged range does not reach. `values`, `filled` and every column
+    are of shape (nb_rows or 1, width or 1).
     """
 
-    __slots__ = ("columns", "values", "width")
+    __slots__ = ("columns", "filled", "values", "width")
 
-    def __init__(self, values, columns, width):
+    def __init__(self, values, columns, width, filled):
 
         self.values = values
         self.columns = columns
         self.width = width
+        self.filled = filled
 
     def degree(self) -> int:
         """The number of variables multiplied together in every entry."""
@@ -67,11 +41,11 @@ class Term:
 
     def scaled(self, factor):
 
-        return Term(self.values * factor, self.columns, self.width)
+        return Term(self.values * factor, self.columns, self.width, self.filled)
 
     def negated(self):
 
-        return Term(-self.values, self.columns, self.width)
+        return Term(-self.values, self.columns, self.width, self.filled)
 
 
 class Block:
@@ -129,7 +103,7 @@ class Block:
         return Block(
             nb_rows,
             np.zeros((1, 1)),
-            [Term(np.ones((1, 1)), (columns,), 1)],
+            [Term(np.ones((1, 1)), (columns,), 1, np.ones((1, 1), dtype=bool))],
             valid=valid,
         )
 
@@ -169,44 +143,47 @@ class Block:
             self.valid,
         )
 
-    def folded(self, nb_rows, nb_cells, padding):
+    def folded(self, nb_rows, nb_cells, filled):
         """
         folded function : brings a block evaluated over (row, index of the sum)
         pairs back to one over rows, by folding the index of the sum into the
         term axis. A term of `width` entries becomes a term of
         `nb_cells * width` entries. This block holds nb_rows * nb_cells rows.
         INPUT:  nb_rows, nb_cells -> shape the block is folded back to
-                padding -> (nb_rows, nb_cells) mask of the inert entries
+                filled -> (nb_rows, nb_cells) mask of the cells the sum keeps
         OUTPUT: Block over nb_rows rows
         """
 
-        has_padding = bool(padding.any())
-        flat_padding = padding.reshape(-1)
+        all_filled = bool(filled.all())
+        flat_filled = filled.reshape(-1)
 
         constant = self.constant
         if constant.shape[0] == 1:
             # the same value on every (row, cell) pair, so folding it is
             # counting the cells it lands on
-            if has_padding:
-                constant = constant * np.logical_not(padding).sum(axis=1, keepdims=True)
+            if not all_filled:
+                constant = constant * filled.sum(axis=1, keepdims=True)
             else:
                 constant = constant * nb_cells
         else:
-            if has_padding:
-                constant = np.where(flat_padding[:, None], 0.0, constant)
+            if not all_filled:
+                constant = np.where(flat_filled[:, None], constant, 0.0)
             constant = constant.reshape(nb_rows, nb_cells).sum(axis=1, keepdims=True)
 
         valid = self.valid
         if valid is not None:
-            # a padded entry never invalidates the row it sits on
-            valid = (valid.reshape(nb_rows, nb_cells) | padding).all(axis=1)
+            # a cell that the sum drops (filled false) should not be able to make the
+            # whole row invalid because of its validity (since it is anyway excluded)
+            valid = (valid.reshape(nb_rows, nb_cells) | np.logical_not(filled)).all(
+                axis=1
+            )
             if valid.all():
                 valid = None
 
         def fold(terms):
 
             return [
-                _folded_term(term, nb_rows, nb_cells, flat_padding, has_padding)
+                _folded_term(term, nb_rows, nb_cells, flat_filled, all_filled)
                 for term in terms
             ]
 
@@ -333,28 +310,27 @@ def _outer_product(left_term, right_term):
             over_pairs(right_columns[:, None, :]),
         ),
         width,
+        over_pairs(left_term.filled[:, :, None] & right_term.filled[:, None, :]),
     )
 
 
-def _folded_term(term, nb_rows, nb_cells, flat_padding, has_padding):
+def _folded_term(term, nb_rows, nb_cells, flat_filled, all_filled):
     """
     _folded_term function : one term of a block being folded, the index of the
     sum laid out along the entries of the term. See Block.folded.
     INPUT:  term -> Term over nb_rows * nb_cells rows
             nb_rows, nb_cells -> shape the term is folded back to
-            flat_padding -> the padding mask over the inner rows
-            has_padding -> whether it marks anything at all
+            flat_filled -> the cells the sum keeps, over the inner rows
+            all_filled -> whether it keeps every one of them
     OUTPUT: Term of nb_cells * width entries over nb_rows rows
     """
 
     width = nb_cells * term.width
     inner_rows = nb_rows * nb_cells
 
-    values = term.values
-    if has_padding:
-        # zeroing the value is what makes a padded entry inert, whatever the
-        # column it carries
-        values = np.where(flat_padding[:, None], 0.0, values)
+    filled = term.filled
+    if not all_filled:
+        filled = filled & flat_filled[:, None]
 
     def fold(value):
         """
@@ -369,9 +345,10 @@ def _folded_term(term, nb_rows, nb_cells, flat_padding, has_padding):
         return np.broadcast_to(value, (inner_rows, term.width)).reshape(nb_rows, width)
 
     return Term(
-        fold(values),
+        fold(term.values),
         tuple(fold(columns) for columns in term.columns),
         width,
+        fold(filled),
     )
 
 
@@ -408,7 +385,12 @@ def _gather_nonzero_terms(terms, valid, block_nb_rows):
         if not keep_every_row:
             values = values[valid]
 
-        kept_rows, kept_entries = np.nonzero(values)
+        live = values != 0.0
+        if not term.filled.all():
+            filled = np.broadcast_to(term.filled, (block_nb_rows, term.width))
+            live &= filled if keep_every_row else filled[valid]
+
+        kept_rows, kept_entries = np.nonzero(live)
         if len(kept_entries) == 0:
             continue
 
