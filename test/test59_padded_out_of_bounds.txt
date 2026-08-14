@@ -1,0 +1,16 @@
+#TIMEHORIZON
+T = 3;
+#NODE A
+#VARIABLES
+internal : x[3];
+internal : z[3];
+#CONSTRAINTS
+fix : x[i] == i + 1 for i in [0:2];
+// A ragged range whose padding carries an index out of bounds. The cells the
+// range reaches have i >= 1, so x[i-1] is in bounds on every one of them; the
+// cells it does not reach hold i = 0, so x[i-1] reads x[-1] there. Those must
+// be excused, or the rows holding any padding are dropped and z becomes
+// [.., .., 6] over one row instead of [1, 3, 6] over three.
+c : z[t] == sum(x[i - 1] for i in [1:t+1]);
+#OBJECTIVES
+min o : z[t];

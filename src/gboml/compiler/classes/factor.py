@@ -11,19 +11,23 @@ from .objective import Objective
 
 
 class ByteArray:
+    """The mask the generated code writes the positions it read a parameter
+    out of range at into. It starts at a single position along every axis and
+    widens to whatever is read, so it can not be intersected in place."""
+
     __slots__ = ("array",)
 
-    def __init__(self, length):
-        self.array = np.ones(length, dtype=bool)
+    def __init__(self, rank):
+        self.array = np.ones((1,) * rank, dtype=bool)
 
-    def intersect_inplace(self, values):
-        self.array &= values
+    def intersect(self, values):
+        self.array = self.array & values
 
 
 def __f_index2__(expr, all_index, name):
     max_length = len(name)
     is_in = np.array(((0 <= expr) & (expr < max_length)), dtype=bool)
-    all_index.intersect_inplace(is_in)
+    all_index.intersect(is_in)
     expr = np.array(expr, dtype=int)
 
     if not is_in.all():
@@ -62,51 +66,75 @@ def is_index_dependant_expression(expression, index) -> bool:
         if predicate is False and e_type == "sum":
             # the index may appear only in the range of the sum, as in
             # sum(x[i] for i in [0:t]), which makes the expression depend
-            # on it just as much as using it in the body would
-            predicate = is_index_dependant_interval(expression, index)
+            # on it
+            time_interval = expression.get_time_interval()
+            condition = expression.get_condition()
+            predicate = (
+                time_interval is not None
+                and is_index_dependant_range(time_interval, index)
+            ) or (
+                condition is not None
+                and is_index_dependant_expression(condition, index)
+            )
 
     return predicate
 
 
-def is_index_dependant_interval(expression, index) -> bool:
+def is_index_dependant_range(time_interval, index) -> bool:
     """
-    is_index_dependant_interval function : whether the range a sum runs
-    over, or the condition filtering it, depends on an enclosing index
-    INPUT:  expression -> Expression object of the sum
-            index -> name of the index, or list of names
-    OUTPUT: bool
+    Whether the bounds of the range a sum runs over depend on an outer index,
+    which is what makes it ragged. The condition filtering the range is not
+    part of this : it masks index values afterwards and does not change the
+    shape they are laid out at.
     """
 
-    time_interval = expression.get_time_interval()
-    if time_interval is None:
-        return False
-
-    parts = [time_interval.get_begin(), time_interval.get_end()]
+    bounds = [time_interval.get_begin(), time_interval.get_end()]
     step = time_interval.get_step()
     if step is not None and not isinstance(step, int):
-        parts.append(step)
-    condition = expression.get_condition()
-    if condition is not None:
-        parts.append(condition)
+        bounds.append(step)
 
-    return any(is_index_dependant_expression(part, index) for part in parts)
+    return any(is_index_dependant_expression(bound, index) for bound in bounds)
 
 
 class Context:
     """
     The namespace expressions are evaluated against, plus the shape they are
-    evaluated at. `index_names` is the list of the indexes enclosing the
-    expression, outermost first, every one of them bound to an array of one
-    value per row.
+    evaluated at. `shape` holds the rows of the constraint, then the range of
+    every outer sum, outermost first ; `index_names` names them in that same
+    order, each one bound to an array of the rank of `shape`.
+    `filled` is false on the positions the outer sums do not read, None
+    standing for the mask that reads them all.
     """
 
-    __slots__ = ("definitions", "nb_rows", "index_names")
+    __slots__ = ("definitions", "filled", "index_names", "shape")
 
-    def __init__(self, definitions, nb_rows, index_names):
+    def __init__(self, definitions, shape, index_names, filled=None):
 
         self.definitions = definitions
-        self.nb_rows = nb_rows
+        self.shape = shape
         self.index_names = index_names
+        self.filled = filled
+
+    @property
+    def nb_rows(self):
+        return self.shape[0]
+
+    @property
+    def rank(self):
+        return len(self.shape)
+
+    def valid_rows(self, in_bounds):
+        """
+        Which rows survive, given where an index landed in range.
+        """
+
+        if self.filled is not None:
+            in_bounds = in_bounds | np.logical_not(self.filled)
+        in_bounds = np.broadcast_to(in_bounds, self.shape)
+        if self.rank > 1:
+            in_bounds = in_bounds.all(axis=tuple(range(1, self.rank)))
+
+        return np.array(in_bounds)
 
     def evaluate(self, python_expression):
         """
@@ -118,13 +146,15 @@ class Context:
         OUTPUT: value (scalar or ndarray), mask of the rows still valid or None
         """
 
-        mask = ByteArray(self.nb_rows)
+        mask = ByteArray(self.rank)
         self.definitions["extension_range"] = mask
         value = eval(python_expression, self.definitions, {})
         if mask.array.all():
             return value, None
 
-        return value, mask.array
+        valid = self.valid_rows(mask.array)
+
+        return value, None if valid.all() else valid
 
 
 class Node:
@@ -151,17 +181,17 @@ class ConstantNode(Node):
 
         value, valid = context.evaluate(self.python_expression)
 
-        return Block.of_constant(context.nb_rows, value, valid)
+        return Block.of_constant(context.nb_rows, context.rank, value, valid)
 
 
 class VariableNode(Node):
     """One variable of the problem, giving a single column per row."""
 
-    __slots__ = ("index", "python_offset", "size")
+    __slots__ = ("index_base", "python_offset", "size")
 
-    def __init__(self, index, offset_expression, size):
+    def __init__(self, index_base, offset_expression, size):
 
-        self.index = index
+        self.index_base = index_base
         self.python_offset = (
             None
             if offset_expression is None
@@ -171,23 +201,22 @@ class VariableNode(Node):
 
     def evaluate(self, context) -> Block:
 
-        nb_rows = context.nb_rows
         valid = None
         if self.python_offset is None:
-            offset = 0
+            index_offset = 0
         else:
-            offset, valid = context.evaluate(self.python_offset)
-            offset = np.asarray(offset)
-            in_bounds = (0 <= offset) & (offset < self.size)
+            index_offset, valid = context.evaluate(self.python_offset)
+            index_offset = np.asarray(index_offset)
+            in_bounds = (0 <= index_offset) & (index_offset < self.size)
             if not np.all(in_bounds):
                 # an index out of range invalidates its row, and is clamped so
                 # that the column stays addressable until the row is dropped
-                valid = combine_valid(
-                    valid, np.broadcast_to(in_bounds, (nb_rows,)).copy()
-                )
-                offset = np.clip(offset, 0, max(self.size - 1, 0))
+                valid = combine_valid(valid, context.valid_rows(in_bounds))
+                index_offset = np.clip(index_offset, 0, max(self.size - 1, 0))
 
-        return Block.of_variable(nb_rows, offset + self.index, valid)
+        return Block.of_variable(
+            context.nb_rows, context.rank, self.index_base + index_offset, valid
+        )
 
 
 class AdditionNode(Node):
@@ -261,12 +290,11 @@ class PowerNode(Node):
     def evaluate(self, context) -> Block:
 
         if self.exponent == 0:
-            return Block.of_constant(context.nb_rows, 1.0)
+            return Block.of_constant(context.nb_rows, context.rank, 1.0)
 
-        block = self.child.evaluate(context)
-        result = block
+        result = self.child.evaluate(context)
         for _ in range(self.exponent - 1):
-            result = multiply_blocks(result, block)
+            result = multiply_blocks(result, self.child.evaluate(context))
 
         return result
 
@@ -299,104 +327,114 @@ class SumNode(Node):
         )
         self.line = expression.get_line()
 
-    def uses_inside(self, name) -> bool:
+    def _index_values(self, context):
         """
-        uses_inside function : whether the body or the condition uses `name`.
-                               The range is left out, being evaluated before
-                               the cells of the sum exist
-        """
-
-        body = self.expression.get_children()[0]
-        if is_index_dependant_expression(body, [name]):
-            return True
-
-        condition = self.expression.get_condition()
-
-        return condition is not None and is_index_dependant_expression(
-            condition, [name]
-        )
-
-    def range_of(self, context):
-        """
-        range_of function : the values of the index, one row per row of the
-        enclosing expression. A ragged range has rows of different lengths, and
-        get_range brings them to the longest, marking the cells it does not
-        reach with NaN, which becomes the mask here.
-        INPUT:  context -> Context object
-        OUTPUT: (nb_rows, nb_cells) array of int, (nb_rows, nb_cells) mask
+        The values of the index, laid out along one new axis after the ones
+        the outer sums are evaluated over, and the mask of the ones the range
+        reaches. A ragged range has rows of different lengths, which get_range
+        brings to the longest, marking with NaN what it leaves.
         """
 
-        # get_range takes its number of rows from the first name it is given,
-        # and only the innermost index is always laid out over every row
-        index_range = self.time_interval.get_range(
-            context.definitions, list_indexes=context.index_names[-1:]
-        )
-
-        if not isinstance(index_range, np.ndarray):
-            values = np.array(list(index_range), dtype=float)
-            index_range = np.broadcast_to(values, (context.nb_rows, len(values)))
-
-        index_range = np.asarray(index_range, dtype=float)
-        if index_range.ndim == 1:
-            index_range = np.broadcast_to(
-                index_range, (context.nb_rows, index_range.shape[0])
+        read = [
+            index_name
+            for index_name in context.index_names
+            if is_index_dependant_range(self.time_interval, [index_name])
+        ]
+        # the range varies exactly where the indexes it reads do, and nowhere
+        # else, so it is laid out over those axes alone
+        outer_shape = (1,) * context.rank
+        for index_name in read:
+            outer_shape = tuple(
+                map(max, outer_shape, context.definitions[index_name].shape)
             )
 
-        filled = np.isfinite(index_range)
-        index_grid = np.zeros(index_range.shape, dtype=int)
-        np.copyto(index_grid, index_range, where=filled, casting="unsafe")
+        if read:
+            # get_range reads one value per row of a flat layout, so those
+            # indexes are handed to it flattened over the axes they span and
+            # its answer is folded back
+            flattened = dict(context.definitions)
+            for index_name in read:
+                flattened[index_name] = np.broadcast_to(
+                    context.definitions[index_name], outer_shape
+                ).reshape(-1)
+            index_range = self.time_interval.get_range(flattened, list_indexes=read[:1])
+        else:
+            index_range = self.time_interval.get_range(
+                context.definitions, list_indexes=[]
+            )
 
-        return index_grid, filled
+        if not isinstance(index_range, np.ndarray):
+            index_range = np.array(list(index_range), dtype=float)
+        index_range = np.asarray(index_range, dtype=float)
+        if index_range.ndim == 1:
+            # the same range on every row, so it is held once and not once per
+            # row, whatever the layout it was asked at
+            outer_shape = (1,) * context.rank
+        index_range = index_range.reshape(outer_shape + index_range.shape[-1:])
+
+        filled = np.isfinite(index_range)
+        index_values = np.zeros(index_range.shape, dtype=int)
+        np.copyto(index_values, index_range, where=filled, casting="unsafe")
+
+        return index_values, filled
 
     def evaluate(self, context) -> Block:
-
-        nb_rows = context.nb_rows
-        index_grid, filled = self.range_of(context)
-        nb_cells = index_grid.shape[1]
-        if nb_cells == 0:
+        index_values, filled = self._index_values(context)
+        width = index_values.shape[-1]
+        if width == 0:
             error_(
                 "Error: no index in the sum at line " + str(self.line) + " is in range"
             )
 
-        enclosing = [name for name in context.index_names if name != self.index_name]
+        outer_index_names = [
+            index_name
+            for index_name in context.index_names
+            if index_name != self.index_name
+        ]
         definitions = dict(context.definitions)
-        for name in enclosing:
-            if self.uses_inside(name):
-                definitions[name] = np.repeat(definitions[name], nb_cells)
-        definitions[self.index_name] = index_grid.reshape(-1)
 
-        inner = Context(definitions, nb_rows * nb_cells, enclosing + [self.index_name])
-        filled = self.apply_condition(inner, filled)
-        block = self.child.evaluate(inner)
+        for index_name in outer_index_names:
+            definitions[index_name] = definitions[index_name][..., None]
+        definitions[self.index_name] = index_values
 
-        return block.folded(nb_rows, nb_cells, filled)
+        filled = self.apply_condition(definitions, filled)
 
-    def apply_condition(self, inner, filled):
+        # an entry is really there when this sum keeps it and every outer one
+        # already did
+        inner_filled = filled
+        if context.filled is not None:
+            inner_filled = context.filled[..., None] & inner_filled
+        inner_filled = None if inner_filled.all() else inner_filled
+
+        block = self.child.evaluate(
+            Context(
+                definitions,
+                context.shape + (width,),
+                outer_index_names + [self.index_name],
+                inner_filled,
+            )
+        )
+
+        return block.summed_over(width, filled)
+
+    def apply_condition(self, definitions, filled):
         """
-        apply_condition function : an index the `where` condition rejects is
-        marked rather than removed, so that no row has to be re-packed for the
-        ranges to stay rectangular.
-        INPUT:  inner -> Context object inside the sum
-                filled -> (nb_rows, nb_cells) mask of the cells kept so far
-        OUTPUT: (nb_rows, nb_cells) mask
+        An index the `where` condition rejects is marked rather than removed,
+        so that no row has to be re-packed for the ranges to stay rectangular.
         """
 
         if self.python_condition is None:
             return filled
 
         try:
-            kept = eval(self.python_condition, inner.definitions, {})
+            kept = eval(self.python_condition, definitions, {})
         except IndexError:
             error_(
                 "ERROR: error while evaluating the condition of the sum "
                 "at line %s" % str(self.line)
             )
 
-        kept = np.broadcast_to(np.asarray(kept, dtype=bool), (inner.nb_rows,)).reshape(
-            filled.shape
-        )
-
-        return filled & kept
+        return filled & np.asarray(kept, dtype=bool)
 
 
 def build_node(expression, variables, constants, collected_variables):
@@ -577,23 +615,20 @@ class Factorize:
             objective.get_expression(), variables, constants, self.variables
         )
 
-    def row_range(self, gl):
+    def _row_index_values(self, definitions):
         """
-        row_range function : the values the index of the constraint takes, that
-        is one per row. An explicit range is used as written; without one, an
-        expression which does not depend on the index gives a single row and
-        any other one gives a row per time step. A `where` condition then
-        filters them.
-        INPUT:  gl -> namespace the expressions are evaluated against
-        OUTPUT: list of the values of the index, True whenever it was written
+        _row_index_values function : the values the index of the constraint
+        takes, that is one per row -- they are the rows.
+        INPUT:  definitions -> namespace the expressions are evaluated against
+        OUTPUT: the values of the index, True whenever the range was written
                 explicitly
         """
 
         obj = self.obj
-        name_index = obj.get_index_var()
-        gl["extension_range"] = ByteArray(1)
-        time_range = obj.get_time_range(gl)
-        explicit = time_range is not None
+        index_name = obj.get_index_var()
+        definitions["extension_range"] = ByteArray(1)
+        index_values = obj.get_time_range(definitions)
+        explicit = index_values is not None
 
         if not explicit:
             if self.type_fact == "constraint":
@@ -605,25 +640,30 @@ class Factorize:
                 expressions.append(condition)
 
             depends = any(
-                is_index_dependant_expression(expression, [name_index])
+                is_index_dependant_expression(expression, [index_name])
                 for expression in expressions
             )
-            time_range = range(gl["T"] if depends else 1)
+            index_values = range(definitions["T"] if depends else 1)
+
+        index_values = np.array(index_values)
 
         condition = obj.get_condition()
         if condition is not None:
-            gl[name_index] = np.array(time_range)
-            gl["extension_range"] = ByteArray(len(gl[name_index]))
+            definitions[index_name] = index_values
+            definitions["extension_range"] = ByteArray(1)
             try:
-                kept = eval(condition.turn_to_python_expression(), gl, {})
+                kept = eval(condition.turn_to_python_expression(), definitions, {})
             except IndexError:
                 error_(
                     "ERROR: error while evaluating the condition at line %s"
                     % (str(obj.get_line()))
                 )
-            time_range = [value for value, keep in zip(time_range, kept) if keep]
+            # a condition which does not read the index gives a single bool,
+            # keeping either every row or none of them
+            kept = np.broadcast_to(np.asarray(kept, dtype=bool), index_values.shape)
+            index_values = index_values[kept]
 
-        return time_range, explicit
+        return index_values, explicit
 
     def extend(self, definitions):
         """
@@ -635,19 +675,23 @@ class Factorize:
         """
 
         obj = self.obj
-        gl = {"sum": sum, "range": range, "len": len, "__f_index__": __f_index2__}
-        gl.update(definitions)
+        definitions = {
+            "sum": sum,
+            "range": range,
+            "len": len,
+            "__f_index__": __f_index2__,
+            **definitions,
+        }
 
         if self.type_fact == "constraint":
             self.extension_type = obj.get_sign()
         else:
             self.extension_type = obj.get_type()
 
-        time_range, explicit = self.row_range(gl)
-        name_index = obj.get_index_var()
-        nb_rows = len(time_range)
-        index_values = np.array(time_range)
-        gl[name_index] = index_values
+        row_index_values, explicit = self._row_index_values(definitions)
+        row_index_name = obj.get_index_var()
+        nb_rows = len(row_index_values)
+        definitions[row_index_name] = row_index_values
 
         if nb_rows == 0:
             # a part is None exactly when it holds no entry
@@ -657,13 +701,13 @@ class Factorize:
 
             return
 
-        block = self.node.evaluate(Context(gl, nb_rows, [name_index]))
+        block = self.node.evaluate(Context(definitions, (nb_rows,), [row_index_name]))
         valid = block.valid
         if valid is None:
             valid = np.ones(nb_rows, dtype=bool)
 
         if not valid.any():
-            dropped = str(index_values[~valid])
+            dropped = str(row_index_values[~valid])
             if explicit:
                 error_(
                     "Constraint : "
@@ -672,22 +716,20 @@ class Factorize:
                     + str(obj.get_line())
                     + " has a time range ill-defined "
                     "as a variable goes out of bounds for "
-                    + str(name_index)
+                    + str(row_index_name)
                     + " equals "
                     + dropped
                 )
             print(
                 "Warning constraint : %s at line %s is ignored for %s "
                 "equal to %s"
-                % (str(obj), str(obj.get_line()), str(name_index), dropped)
+                % (str(obj), str(obj.get_line()), str(row_index_name), dropped)
             )
             self.sparse = None
             self.quadratic_terms = None
             self.independent_terms = np.zeros(0)
 
             return
-
-        nb_rows = int(np.count_nonzero(valid))
 
         if self.type_fact == "constraint":
             # the matrix holds the coefficients of the left hand side minus the
@@ -696,4 +738,4 @@ class Factorize:
         else:
             self.independent_terms = block.constant_over(valid)
 
-        self.sparse, self.quadratic_terms = block.assemble(valid, nb_rows)
+        self.sparse, self.quadratic_terms = block.assemble(valid)

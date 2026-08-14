@@ -1,0 +1,51 @@
+// Products and constants meeting a sum. Every shape below distinguishes an
+// index the sum is still running over from one it has already laid out as
+// entries : the first is matched between the two operands of a product, the
+// second is multiplied. Getting that split wrong gives a wrong number rather
+// than a crash, so x is pinned to [1, 2, 3] and y to [4, 5, 6] and every row
+// is a single known value.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#PARAMETERS
+N = 3;
+p = {1, 2, 3};
+#VARIABLES
+internal : x[N];
+internal : y[N];
+internal : z_dot[T];
+internal : z_sibling[T];
+internal : z_two_axes[T];
+internal : z_square[T];
+internal : z_const_i[T];
+internal : z_const_1[T];
+internal : z_const_t[T];
+#CONSTRAINTS
+fix_x     : x[i] == i + 1 for i in [0:N-1];
+fix_y     : y[j] == j + 4 for j in [0:N-1];
+// a product inside a sum : the two operands are read at the same i, so the
+// products between different summands do not exist. 1*4 + 2*5 + 3*6 == 32,
+// and never the nine pairs, which would give 6 * 15 == 90
+dot       : z_dot[t] == sum(x[i]*y[i] for i in [0:N-1]);
+// two sums spelled with the same letter, side by side : those are two
+// different ranges and every pair does exist here. 6 * 15 == 90
+sibling   : z_sibling[t] == sum(x[i] for i in [0:N-1])
+                          * sum(y[i] for i in [0:N-1]);
+// one operand carrying two ranges at once against one carrying a single one :
+// (1 + 3 + 6) * 15 == 150
+two_axes  : z_two_axes[t] == sum(sum(x[a] for a in [0:i]) for i in [0:N-1])
+                           * sum(y[j] for j in [0:N-1]);
+// a sum squared, which is the same expression on both sides of the product :
+// 6**2 == 36, and never 1 + 4 + 9 == 14
+square    : z_square[t] == (sum(x[i] for i in [0:N-1]))**2;
+// a constant inside a sum is really summed over the range, unlike a term :
+// 6 + (1 + 2 + 3) == 12
+const_i   : z_const_i[t] == sum(x[i] + p[i] for i in [0:N-1]);
+// the same, the constant not depending on the index : 6 + 3*1 == 9
+const_1   : z_const_1[t] == sum(x[i] + 1 for i in [0:N-1]);
+// and depending on the row but not on the index : 6 + 3*t == [6, 9, 12]
+const_t   : z_const_t[t] == sum(x[i] + t for i in [0:N-1]);
+#OBJECTIVES
+// 32 * 3 == 96
+min c : z_dot[t];

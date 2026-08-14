@@ -1338,6 +1338,95 @@ class CompilerTests(unittest.TestCase):
         self.assertEqual(variables["z_nested_ragged"]["values"],
                          [1.0, 4.0, 10.0, 20.0])
 
+    def test_padded_entry_out_of_bounds(self):
+        """ test_padded_entry_out_of_bounds
+
+        Tests a ragged sum whose padding carries an index out of bounds. A cell
+        the range does not reach holds 0, so `x[i - 1]` reads `x[-1]` there.
+        Nothing reads that cell, so it must not invalidate its row : dropping
+        the excuse keeps only the row that has no padding at all, 4 equality
+        rows instead of 6
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test59_padded_out_of_bounds.txt', "--gurobi",
+             "--json", "--output", "test/test59_padded_out_of_bounds"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test59_padded_out_of_bounds.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+        variables = solution["elements"]["A"]["variables"]
+        self.assertEqual(variables["x"]["values"], [1.0, 2.0, 3.0])
+        for got, expected in zip(variables["z"]["values"], [1.0, 3.0, 6.0]):
+            self.assertAlmostEqual(got, expected, places=4)
+
+    def test_sum_products_and_constants(self):
+        """ test_sum_products_and_constants
+
+        Tests the two ways an index of a sum meets a product. An index the sum
+        is still running over is read at the same value by both operands, so
+        the products between different summands do not exist : the dot product
+        is 32 and not the 90 every pair would give. An index the sum has
+        already laid out as entries is a summand of its own, so two sums side
+        by side do pair every entry with every entry, whether they are spelled
+        with the same letter or not, and a sum squared is 36 and not 14.
+        The constants pin the other half of that split : a constant inside a
+        sum really is summed over the range, unlike a term, which the matrix
+        sums later
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test60_sum_products.txt', "--gurobi", "--json",
+             "--output", "test/test60_sum_products"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test60_sum_products.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+        self.assertAlmostEqual(solution["objective"], 96.0, places=4)
+        variables = solution["elements"]["A"]["variables"]
+        expected = {
+            "z_dot": [32.0, 32.0, 32.0],
+            "z_sibling": [90.0, 90.0, 90.0],
+            "z_two_axes": [150.0, 150.0, 150.0],
+            "z_square": [36.0, 36.0, 36.0],
+            "z_const_i": [12.0, 12.0, 12.0],
+            "z_const_1": [9.0, 9.0, 9.0],
+            "z_const_t": [6.0, 9.0, 12.0],
+        }
+        for name, values in expected.items():
+            for got, want in zip(variables[name]["values"], values):
+                self.assertAlmostEqual(got, want, places=4, msg=name)
+
+    def test_constant_where_on_a_constraint(self):
+        """ test_constant_where_on_a_constraint
+
+        Tests a `where` on a constraint whose condition does not read the index
+        of the constraint. It then evaluates to a single bool rather than to
+        one per row, and either every row is kept or none is. Filtering used to
+        zip the rows with that bool and raise a raw TypeError, on master too
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test58_constant_where.txt', "--gurobi", "--json",
+             "--output", "test/test58_constant_where"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test58_constant_where.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+        self.assertAlmostEqual(solution["objective"], 32.0, places=4)
+        variables = solution["elements"]["A"]["variables"]
+        # the condition held, so every row was kept and x is pinned
+        self.assertEqual(variables["x"]["values"], [1.0, 1.0, 1.0, 1.0])
+        # it did not, so the constraint contributed no row and only the bound
+        # is left on y
+        self.assertEqual(variables["y"]["values"], [7.0, 7.0, 7.0, 7.0])
+
     def test_sum_body_reads_enclosing_index(self):
         """ test_sum_body_reads_enclosing_index
 

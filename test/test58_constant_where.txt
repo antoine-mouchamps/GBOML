@@ -1,0 +1,22 @@
+// A `where` on a constraint that does not read the index. The condition then
+// evaluates to a single bool rather than one per row, keeping either every row
+// or none of them. It used to raise a raw TypeError, on master too.
+#TIMEHORIZON
+T = 4;
+
+#NODE A
+#PARAMETERS
+N = 3;
+#VARIABLES
+internal : x[T];
+internal : y[T];
+#CONSTRAINTS
+// N > 1 holds, so every row is kept and x is pinned to 1
+kept    : x[k] == 1 for k in [0:T-1] where N > 1;
+// N > 9 does not, so the constraint contributes no row at all and y is free,
+// which the bound below is there to pin
+dropped : y[k] == 1 for k in [0:T-1] where N > 9;
+y[k] >= 7 for k in [0:T-1];
+#OBJECTIVES
+// 4 * 1 + 4 * 7 == 32
+min c : x[t] + y[t];
