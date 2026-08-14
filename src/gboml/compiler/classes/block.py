@@ -163,11 +163,14 @@ class Block:
             self.valid,
         )
 
-    def scaled(self, factor):
+    def scaled(self, factor, valid=None):
         """
         scaled function : multiplies the whole polynomial by a value which does
                           not depend on the variables.
         INPUT:  factor -> ndarray of the rank the block is evaluated at
+                valid -> the mask to carry instead of the block's own, for a
+                         caller which has already combined it with the mask of
+                         wherever the factor came from
         OUTPUT: Block
         """
 
@@ -176,7 +179,7 @@ class Block:
             self.constant * factor,
             [term.scaled(factor) for term in self.linear],
             [term.scaled(factor) for term in self.quadratic],
-            self.valid,
+            self.valid if valid is None else valid,
         )
 
     def summed_over(self, width, filled):
@@ -280,13 +283,18 @@ def multiply_blocks(left, right):
     valid = combine_valid(left.valid, right.valid)
 
     if left.degree() == 0:
-        return Block(nb_rows, *_scaled_parts(right, left.constant), valid=valid)
+        return right.scaled(left.constant, valid)
     if right.degree() == 0:
-        return Block(nb_rows, *_scaled_parts(left, right.constant), valid=valid)
+        return left.scaled(right.constant, valid)
+
+    assert not left.quadratic and not right.quadratic
 
     constant = left.constant * right.constant
-    linear = [term.scaled(right.constant) for term in left.linear]
-    linear += [term.scaled(left.constant) for term in right.linear]
+    linear = []
+    if right.constant.any():
+        linear += [term.scaled(right.constant) for term in left.linear]
+    if left.constant.any():
+        linear += [term.scaled(left.constant) for term in right.linear]
 
     quadratic = []
     for left_term in left.linear:
@@ -294,16 +302,6 @@ def multiply_blocks(left, right):
             quadratic.append(_outer_product(left_term, right_term))
 
     return Block(nb_rows, constant, linear, quadratic, valid)
-
-
-def _scaled_parts(block, factor):
-    """The parts of a block scaled by a constant."""
-
-    return (
-        block.constant * factor,
-        [term.scaled(factor) for term in block.linear],
-        [term.scaled(factor) for term in block.quadratic],
-    )
 
 
 def _outer_product(left_term, right_term):

@@ -47,21 +47,15 @@ def is_index_dependant_expression(expression, index) -> bool:
         seed = expression.get_name()
         if type(seed) == Identifier:
             identifier = seed
-            id_type = identifier.get_type()
-            id_name = identifier.get_name()
-            if id_type == "assign":
-                predicate = is_index_dependant_expression(
-                    identifier.get_expression(), index
-                )
-            if id_name in index:
-                predicate = True
+            predicate = identifier.get_name() in index or (
+                identifier.get_type() == "assign"
+                and is_index_dependant_expression(identifier.get_expression(), index)
+            )
 
     else:
-        for child in children:
-            predicate_i = is_index_dependant_expression(child, index)
-            if predicate_i:
-                predicate = predicate_i
-                break
+        predicate = any(
+            is_index_dependant_expression(child, index) for child in children
+        )
 
         if predicate is False and e_type == "sum":
             # the index may appear only in the range of the sum, as in
@@ -100,8 +94,8 @@ class Context:
     """
     The namespace expressions are evaluated against, plus the shape they are
     evaluated at. `shape` holds the rows of the constraint, then the range of
-    every outer sum, outermost first ; `index_names` names them in that same
-    order, each one bound to an array of the rank of `shape`.
+    every outer sum, outermost first. `index_names` are the indexes in scope,
+    each one bound to an array of the rank of `shape`.
     `filled` is false on the positions the outer sums do not read, None
     standing for the mask that reads them all.
     """
@@ -270,10 +264,11 @@ class DivisionNode(Node):
 
         numerator = self.numerator.evaluate(context)
         denominator = self.denominator.evaluate(context)
-        block = numerator.scaled(1.0 / denominator.constant)
-        block.valid = combine_valid(block.valid, denominator.valid)
 
-        return block
+        return numerator.scaled(
+            1.0 / denominator.constant,
+            combine_valid(numerator.valid, denominator.valid),
+        )
 
 
 class PowerNode(Node):
@@ -363,8 +358,6 @@ class SumNode(Node):
                 context.definitions, list_indexes=[]
             )
 
-        if not isinstance(index_range, np.ndarray):
-            index_range = np.array(list(index_range), dtype=float)
         index_range = np.asarray(index_range, dtype=float)
         if index_range.ndim == 1:
             # the same range on every row, so it is held once and not once per
@@ -626,6 +619,7 @@ class Factorize:
 
         obj = self.obj
         index_name = obj.get_index_var()
+        condition = obj.get_condition()
         definitions["extension_range"] = ByteArray(1)
         index_values = obj.get_time_range(definitions)
         explicit = index_values is not None
@@ -635,7 +629,6 @@ class Factorize:
                 expressions = [obj.get_rhs(), obj.get_lhs()]
             else:
                 expressions = [obj.get_expression()]
-            condition = obj.get_condition()
             if condition is not None:
                 expressions.append(condition)
 
@@ -647,7 +640,6 @@ class Factorize:
 
         index_values = np.array(index_values)
 
-        condition = obj.get_condition()
         if condition is not None:
             definitions[index_name] = index_values
             definitions["extension_range"] = ByteArray(1)
