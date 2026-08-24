@@ -38,58 +38,6 @@ def __f_index2__(expr, all_index, name):
     return return_value
 
 
-def is_index_dependant_expression(expression, index) -> bool:
-
-    e_type = expression.get_type()
-    children = expression.get_children()
-    predicate: bool = False
-    if e_type == "literal":
-        seed = expression.get_name()
-        if type(seed) == Identifier:
-            identifier = seed
-            predicate = identifier.get_name() in index or (
-                identifier.get_type() == "assign"
-                and is_index_dependant_expression(identifier.get_expression(), index)
-            )
-
-    else:
-        predicate = any(
-            is_index_dependant_expression(child, index) for child in children
-        )
-
-        if predicate is False and e_type == "sum":
-            # the index may appear only in the range of the sum, as in
-            # sum(x[i] for i in [0:t]), which makes the expression depend
-            # on it
-            time_interval = expression.get_time_interval()
-            condition = expression.get_condition()
-            predicate = (
-                time_interval is not None
-                and is_index_dependant_range(time_interval, index)
-            ) or (
-                condition is not None
-                and is_index_dependant_expression(condition, index)
-            )
-
-    return predicate
-
-
-def is_index_dependant_range(time_interval, index) -> bool:
-    """
-    Whether the bounds of the range a sum runs over depend on an outer index,
-    which is what makes it ragged. The condition filtering the range is not
-    part of this : it masks index values afterwards and does not change the
-    shape they are laid out at.
-    """
-
-    bounds = [time_interval.get_begin(), time_interval.get_end()]
-    step = time_interval.get_step()
-    if step is not None and not isinstance(step, int):
-        bounds.append(step)
-
-    return any(is_index_dependant_expression(bound, index) for bound in bounds)
-
-
 class Context:
     """
     The namespace expressions are evaluated against, plus the shape they are
@@ -333,7 +281,7 @@ class SumNode(Node):
         read = [
             index_name
             for index_name in context.index_names
-            if is_index_dependant_range(self.time_interval, [index_name])
+            if self.time_interval.depends_on_index([index_name])
         ]
         # the range varies exactly where the indexes it reads do, and nowhere
         # else, so it is laid out over those axes alone
@@ -633,7 +581,7 @@ class Factorize:
                 expressions.append(condition)
 
             depends = any(
-                is_index_dependant_expression(expression, [index_name])
+                expression.depends_on_index([index_name])
                 for expression in expressions
             )
             index_values = range(definitions["T"] if depends else 1)

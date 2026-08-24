@@ -135,6 +135,17 @@ class TimeInterval:
 
         return self.name
 
+    def depends_on_index(self, names) -> bool:
+        """Whether the bounds of the range depend on an outer index, which
+        is what makes it ragged.
+        """
+
+        bounds = [self.begin, self.end]
+        if self.step is not None and not isinstance(self.step, int):
+            bounds.append(self.step)
+
+        return any(bound.depends_on_index(names) for bound in bounds)
+
     def get_range(self, definitions: dict, clip: int = sys.maxsize,
                   default_type="ast", list_indexes=None) -> range:
 

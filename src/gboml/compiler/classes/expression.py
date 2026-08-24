@@ -125,6 +125,35 @@ class Expression(Symbol):
 
         return self.condition
 
+    def depends_on_index(self, names) -> bool:
+        """Whether the expression reads one of those indexes without
+        binding it, which is what makes what it evaluates to vary along
+        them."""
+
+        if self.type == "literal":
+            seed = self.name
+            return type(seed) == Identifier and (
+                seed.get_name() in names
+                or (
+                    seed.get_type() == "assign"
+                    and seed.get_expression().depends_on_index(names)
+                )
+            )
+
+        if any(child.depends_on_index(names) for child in self.children):
+            return True
+
+        if self.type == "sum":
+            # the index may appear in the range of the sum, as in
+            # sum(x[i] for i in [0:t]), which makes the expression depend
+            # on it
+            return (
+                self.time_interval is not None
+                and self.time_interval.depends_on_index(names)
+            ) or (self.condition is not None and self.condition.depends_on_index(names))
+
+        return False
+
     def check_time(self, definitions):
 
         predicate = True

@@ -40,6 +40,12 @@ class Condition(Type):
     
         return self.children
 
+    def depends_on_index(self, names) -> bool:
+        """A condition depends on an index when one of its children
+        does."""
+
+        return any(child.depends_on_index(names) for child in self.children)
+
     def check(self, definitions: dict) -> bool:
     
         predicate = False
