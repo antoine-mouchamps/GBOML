@@ -357,8 +357,11 @@ def _gather_nonzero_terms(terms, valid, nb_rows):
     """
 
     keep_every_row = bool(valid.all())
-    gathered = [[np.zeros(0, dtype=int)], [np.zeros(0, dtype=float)]]
-    gathered += [[np.zeros(0, dtype=int)] for _ in range(terms[0].degree())]
+    row_number = None if keep_every_row else np.cumsum(valid) - 1
+
+    rows = [np.zeros(0, dtype=int)]
+    values = [np.zeros(0, dtype=float)]
+    columns = [[np.zeros(0, dtype=int)] for _ in range(terms[0].degree())]
 
     # popping from the end is what releases each term, and reversing first
     # keeps the entries in the order they were written in
@@ -366,29 +369,34 @@ def _gather_nonzero_terms(terms, valid, nb_rows):
     while terms:
         term = terms.pop()
         shape = (nb_rows,) + term.widths
-        values = np.broadcast_to(term.values, shape)
-        if not keep_every_row:
-            values = values[valid]
+        term_values = np.broadcast_to(term.values, shape)
 
-        live = values != 0.0
+        live = term_values != 0.0
+        if not keep_every_row:
+            # remove rows that should be excluded
+            valid_rows = valid.reshape((nb_rows,) + (1,) * len(term.widths))
+            live &= valid_rows
         if not term.filled.all():
-            filled = np.broadcast_to(term.filled, shape)
-            live &= filled if keep_every_row else filled[valid]
+            # remove ragged terms in the width
+            valid_padding = np.broadcast_to(term.filled, shape)
+            live &= valid_padding
 
         # one array per axis, the first of them being the row an entry lands on
         kept = np.nonzero(live)
         if len(kept[0]) == 0:
             continue
 
-        gathered[0].append(kept[0])
-        gathered[1].append(values[kept])
-        for index, columns in enumerate(term.columns, start=2):
-            rectangle = np.broadcast_to(columns, shape)
-            if not keep_every_row:
-                rectangle = rectangle[valid]
-            gathered[index].append(rectangle[kept])
+        rows.append(kept[0] if keep_every_row else row_number[kept[0]])
+        values.append(term_values[kept])
+        for gathered_column, term_column in zip(columns, term.columns):
+            rectangle = np.broadcast_to(term_column, shape)[kept]
+            gathered_column.append(rectangle)
 
-    return tuple(np.concatenate(arrays) for arrays in gathered)
+    return (
+        np.concatenate(rows),
+        np.concatenate(values),
+        *(np.concatenate(column) for column in columns),
+    )
 
 
 def _build_sparse_array(terms, valid, nb_kept_rows, nb_rows):
