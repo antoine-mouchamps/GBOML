@@ -1,0 +1,20 @@
+// A sum is checked with the same namespace as the expression holding it. Its
+// children were the one place the list of parent nodes was not passed on, so
+// a reference to a parent's parameter was refused inside a sum and accepted
+// everywhere else.
+#TIMEHORIZON T = 3;
+
+#NODE A
+#PARAMETERS
+cap = 2;
+#NODE B
+#VARIABLES
+internal : x[T];
+#CONSTRAINTS
+// three times cap, read from the parent, inside and outside a sum
+in_sum  : x[t] >= sum(A.cap for i in [0:2]);
+outside : x[t] >= A.cap;
+#VARIABLES
+internal : y[T] <- B.x[3];
+#OBJECTIVES
+min : y[t];

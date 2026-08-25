@@ -1637,6 +1637,30 @@ class CompilerTests(unittest.TestCase):
         self.assertIn("Unknown identifier", process.stdout)
 
 
+    def test_a_sum_reads_a_parent_parameter(self):
+        """ test_a_sum_reads_a_parent_parameter
+
+        The children of a sum were the one expression checked without the
+        list of parent nodes, so a reference a node is allowed to make was
+        refused as soon as it stood inside a sum. Three times cap, read from
+        the parent, against the two the same reference gives outside one
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test73_sum_reads_a_parent_parameter.txt',
+             "--linprog", "--json", "--output",
+             "test/test73_sum_reads_a_parent_parameter"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test73_sum_reads_a_parent_parameter.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+            self.assertEqual(
+                solution["elements"]["A"]["variables"]["y"]["values"],
+                [6.0, 6.0, 6.0])
+
+
 class GBOMLpyTest(unittest.TestCase):
     """
     GBOMLpyTest

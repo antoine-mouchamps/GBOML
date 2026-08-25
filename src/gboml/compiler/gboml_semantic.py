@@ -915,7 +915,8 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                                             variables_allowed,
                                             in_node_name_variable,
                                             in_node_name_parameter,
-                                            variable_type)
+                                            variable_type,
+                                            parent_hood)
 
 
 def add_link_names(link: Hyperedge):
