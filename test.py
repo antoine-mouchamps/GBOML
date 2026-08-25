@@ -1562,6 +1562,31 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(variables["by_zero"]["values"], [1.0, 1.0])
 
 
+    def test_a_hyperedge_range_and_where_read_the_edge_parameters(self):
+        """ test_a_hyperedge_range_and_where_read_the_edge_parameters
+
+        The naming pass visited the two sides of an edge constraint and
+        nothing else, so a name in its range or in its condition was left
+        bare and reached the evaluator undefined. Every part is pinned by a
+        value here : the range keeps 1, 3 and 5, the condition drops 3, and
+        w follows y on those rows alone
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test69_hyperedge_range_and_where.txt', "--linprog",
+             "--json", "--output", "test/test69_hyperedge_range_and_where"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test69_hyperedge_range_and_where.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+            elements = solution["elements"]
+            self.assertEqual(elements["A"]["variables"]["y"]["values"],
+                             [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            self.assertEqual(elements["B"]["variables"]["w"]["values"],
+                             [0.0, 2.0, 0.0, 0.0, 0.0, 6.0])
+
 class GBOMLpyTest(unittest.TestCase):
     """
     GBOMLpyTest

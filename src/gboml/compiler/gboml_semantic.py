@@ -830,6 +830,23 @@ def add_link_names(link: Hyperedge):
         index_var = constraint.get_index_var()
 
         reserved = [index_var]
+
+        time_interval = constraint.get_time_interval()
+        if time_interval is not None:
+            begin = time_interval.get_begin()
+            step = time_interval.get_step()
+            end = time_interval.get_end()
+            add_node_names_expression(begin, link, [])
+            add_node_names_expression(step, link, [])
+            add_node_names_expression(end, link, [])
+
+        condition = constraint.get_condition()
+        if condition is not None:
+            condition_lhs, condition_rhs = condition.get_children()
+            add_node_names_condition(condition_lhs, link, reserved)
+            add_node_names_condition(condition_rhs, link, reserved)
+
+        lhs = constraint.get_lhs()
         add_node_names_expression(lhs, link, reserved)
         rhs = constraint.get_rhs()
         add_node_names_expression(rhs, link, reserved)
