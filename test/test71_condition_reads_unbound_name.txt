@@ -1,0 +1,13 @@
+// A `where` holds expressions the way the two sides of the constraint do,
+// and was the last piece of one the definition pass never looked at. A bare
+// name there used to reach the evaluator and raise a NameError.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : y[3];
+#CONSTRAINTS
+bad : y[k] >= 0 for k in [0:2] where k <= zzz;
+#OBJECTIVES
+min : y[0];

@@ -1604,6 +1604,22 @@ class CompilerTests(unittest.TestCase):
         self.assertIn("Unknown identifier", process.stdout)
 
 
+    def test_a_where_is_checked_like_the_rest_of_the_constraint(self):
+        """ test_a_where_is_checked_like_the_rest_of_the_constraint
+
+        A condition holds expressions the way the two sides do, and was the
+        last piece of a constraint the definition pass never read. A bare
+        name there used to raise a NameError out of the evaluator
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test71_condition_reads_unbound_name.txt',
+             "--linprog"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("Unknown identifier", process.stdout)
+
 class GBOMLpyTest(unittest.TestCase):
     """
     GBOMLpyTest

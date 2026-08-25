@@ -608,6 +608,18 @@ def check_definition_link(link: Hyperedge, variables_dict: dict,
                                     variable_type="external",
                                     parent_hood=parent_hood)
 
+        condition = constraint.get_condition()
+        if condition is not None:
+            check_definition_condition(
+                condition,
+                variables_dict,
+                parameters_dict,
+                reserved,
+                in_node_name_parameter=link_name,
+                variable_type="external",
+                parent_hood=parent_hood,
+            )
+
 
 def recursive_check_definition_node(node: Node, current_definitions,
                                     variables_dict: dict, parameters_dict: dict,
@@ -687,6 +699,18 @@ def check_definition(node: Node, variables_dict: dict,
                                     in_node_name_parameter=node_name,
                                     parent_hood=parent_hood)
 
+        condition = constraint.get_condition()
+        if condition is not None:
+            check_definition_condition(
+                condition,
+                variables_dict,
+                parameters_dict,
+                reserved,
+                in_node_name_variable=node_name,
+                in_node_name_parameter=node_name,
+                parent_hood=parent_hood,
+            )
+
     for objective in objectives_list:
         expr = objective.get_expression()
         index_var = objective.get_index_var()
@@ -722,6 +746,33 @@ def check_definition(node: Node, variables_dict: dict,
                                     in_node_name_variable=node_name,
                                     in_node_name_parameter=node_name,
                                     parent_hood=parent_hood)
+
+        condition = objective.get_condition()
+        if condition is not None:
+            check_definition_condition(
+                condition,
+                variables_dict,
+                parameters_dict,
+                reserved,
+                in_node_name_variable=node_name,
+                in_node_name_parameter=node_name,
+                parent_hood=parent_hood,
+            )
+
+
+def check_definition_condition(
+    condition, variables_dict: dict, parameters_dict: dict, reserved, **kwargs
+):
+
+    if type(condition) == Expression:
+        check_definition_expression(
+            condition, variables_dict, parameters_dict, reserved, **kwargs
+        )
+    else:
+        for child in condition.get_children():
+            check_definition_condition(
+                child, variables_dict, parameters_dict, reserved, **kwargs
+            )
 
 
 def check_definition_expression(expr: Expression, variables_dict: dict,
