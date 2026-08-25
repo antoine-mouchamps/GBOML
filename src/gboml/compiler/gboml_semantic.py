@@ -895,6 +895,19 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                        + str(index_name) +
                        " at line " + str(leaf.get_line()))
 
+            for bound in time_interval.get_interval():
+                check_definition_expression(
+                    bound,
+                    variables_dict,
+                    parameters_dict,
+                    reserved,
+                    variables_allowed=False,
+                    in_node_name_variable=in_node_name_variable,
+                    in_node_name_parameter=in_node_name_parameter,
+                    variable_type=variable_type,
+                    parent_hood=parent_hood,
+                )
+
             reserved_sum = reserved + [index_name]
             for child in sum_children:
                 check_definition_expression(child, variables_dict,

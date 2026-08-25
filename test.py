@@ -1620,6 +1620,23 @@ class CompilerTests(unittest.TestCase):
         self.assertNotEqual(process.returncode, 0)
         self.assertIn("Unknown identifier", process.stdout)
 
+    def test_the_range_of_a_sum_is_checked_like_the_rest_of_it(self):
+        """ test_the_range_of_a_sum_is_checked_like_the_rest_of_it
+
+        Unlike the range of a `for`, the range of a sum may name an index the
+        rows run over, which is what makes it ragged, but it still has to name
+        something
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test72_sum_range_reads_unbound_name.txt',
+             "--linprog"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("Unknown identifier", process.stdout)
+
+
 class GBOMLpyTest(unittest.TestCase):
     """
     GBOMLpyTest
