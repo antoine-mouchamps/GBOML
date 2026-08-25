@@ -276,7 +276,7 @@ class TimeInterval:
     def check_triplet_array(self, begin_value: np.ndarray, end_value:np.ndarray, step_value: np.ndarray,
               clip: int = sys.maxsize) -> tuple:
 
-        if (end_value < begin_value).any():
+        if (end_value < begin_value).all():
             error_("ERROR: in for loop, the end_value: " + str(self.end) +
                    " is smaller than the begin value " + str(self.begin)
                    + " at line " + str(self.line))
