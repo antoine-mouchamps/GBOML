@@ -1,0 +1,13 @@
+// The bounds of a range are evaluated before the index they run over is
+// bound, so an index written there names nothing. The bounds used to reach
+// the evaluator unchecked, where a bare name raised a NameError.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : y[3];
+#CONSTRAINTS
+bad : y[k] >= 0 for k in [0:t];
+#OBJECTIVES
+min : y[0];

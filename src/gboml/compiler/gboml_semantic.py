@@ -586,6 +586,16 @@ def check_definition_link(link: Hyperedge, variables_dict: dict,
                    + " is already used to define parameter "
                    + str(parameters_dict[link_name][index_var]))
 
+        # a `for` range may only read parameters, never an index or a variable
+        time_interval = constraint.get_time_interval()
+        if time_interval is not None:
+            for bound in time_interval.get_interval():
+                check_definition_expression(bound, variables_dict,
+                                            parameters_dict, [],
+                                            variables_allowed=False,
+                                            in_node_name_parameter=link_name,
+                                            parent_hood=parent_hood)
+
         reserved = [index_var]
         lhs = constraint.get_lhs()
         check_definition_expression(lhs, variables_dict, parameters_dict,
@@ -652,6 +662,17 @@ def check_definition(node: Node, variables_dict: dict,
                    + " is already used to define parameter "
                    + str(variables_dict[node_name][index_var]))
 
+        # a `for` range may only read parameters, never an index or a variable
+        time_interval = constraint.get_time_interval()
+        if time_interval is not None:
+            for bound in time_interval.get_interval():
+                check_definition_expression(bound, variables_dict,
+                                            parameters_dict, [],
+                                            variables_allowed=False,
+                                            in_node_name_variable=node_name,
+                                            in_node_name_parameter=node_name,
+                                            parent_hood=parent_hood)
+
         reserved = [index_var]
         lhs = constraint.get_lhs()
         check_definition_expression(lhs, variables_dict,
@@ -683,6 +704,17 @@ def check_definition(node: Node, variables_dict: dict,
                    + str(objective.get_line())
                    + " is already used to define parameter "
                    + str(variables_dict[node_name][index_var]))
+
+        # a `for` range may only read parameters, never an index or a variable
+        time_interval = objective.get_time_interval()
+        if time_interval is not None:
+            for bound in time_interval.get_interval():
+                check_definition_expression(bound, variables_dict,
+                                            parameters_dict, [],
+                                            variables_allowed=False,
+                                            in_node_name_variable=node_name,
+                                            in_node_name_parameter=node_name,
+                                            parent_hood=parent_hood)
 
         reserved = [index_var]
         check_definition_expression(expr, variables_dict,
@@ -826,9 +858,7 @@ def add_link_names(link: Hyperedge):
     constraints_list = link.get_constraints()
 
     for constraint in constraints_list:
-        lhs = constraint.get_lhs()
         index_var = constraint.get_index_var()
-
         reserved = [index_var]
 
         time_interval = constraint.get_time_interval()

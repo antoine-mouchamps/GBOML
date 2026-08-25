@@ -1587,6 +1587,23 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(elements["B"]["variables"]["w"]["values"],
                              [0.0, 2.0, 0.0, 0.0, 0.0, 6.0])
 
+    def test_a_range_is_checked_like_the_rest_of_the_constraint(self):
+        """ test_a_range_is_checked_like_the_rest_of_the_constraint
+
+        A bound reading the index which numbers the rows names nothing, the
+        range being evaluated before that index is bound. The bounds were the
+        only expressions the definition pass never looked at, so this used to
+        raise a NameError out of the evaluator
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test70_range_reads_unbound_name.txt', "--linprog"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("Unknown identifier", process.stdout)
+
+
 class GBOMLpyTest(unittest.TestCase):
     """
     GBOMLpyTest
