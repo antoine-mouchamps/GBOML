@@ -2,12 +2,23 @@
 # Bardhyl Miftari, Mathias Berger, Hatim Djelassi, Damien Ernst,
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
+from types import CodeType
+
 import numpy as np  # type: ignore
 
 from gboml.compiler.utils import error_
-from .block import Block, add_blocks, combine_valid, multiply_blocks
+from .block import (
+    Block,
+    RowMask,
+    add_blocks,
+    combine_valid,
+    multiply_blocks,
+)
+from .constraint import Constraint
+from .expression import Expression
 from .identifier import Identifier
 from .objective import Objective
+from .variable import Variable
 
 
 class ByteArray:
@@ -17,14 +28,16 @@ class ByteArray:
 
     __slots__ = ("array",)
 
-    def __init__(self, rank):
+    def __init__(self, rank: int) -> None:
         self.array = np.ones((1,) * rank, dtype=bool)
 
-    def intersect(self, values):
+    def intersect(self, values: np.ndarray) -> None:
         self.array = self.array & values
 
 
-def __f_index2__(expr, all_index, name):
+def __f_index2__(
+    expr: np.ndarray, all_index: ByteArray, name: np.ndarray
+) -> np.ndarray:
     max_length = len(name)
     is_in = np.array(((0 <= expr) & (expr < max_length)), dtype=bool)
     all_index.intersect(is_in)
@@ -50,7 +63,13 @@ class Context:
 
     __slots__ = ("definitions", "filled", "index_names", "shape")
 
-    def __init__(self, definitions, shape, index_names, filled=None):
+    def __init__(
+        self,
+        definitions: dict,
+        shape: tuple[int, ...],
+        index_names: list[str],
+        filled: np.ndarray | None = None,
+    ) -> None:
 
         self.definitions = definitions
         self.shape = shape
@@ -58,14 +77,14 @@ class Context:
         self.filled = filled
 
     @property
-    def nb_rows(self):
+    def nb_rows(self) -> int:
         return self.shape[0]
 
     @property
-    def rank(self):
+    def rank(self) -> int:
         return len(self.shape)
 
-    def valid_rows(self, in_bounds):
+    def valid_rows(self, in_bounds: np.ndarray) -> RowMask:
         """
         Which rows survive, given where an index landed in range.
         """
@@ -78,7 +97,9 @@ class Context:
 
         return np.array(in_bounds)
 
-    def evaluate(self, python_expression):
+    def evaluate(
+        self, python_expression: CodeType
+    ) -> tuple[float | np.ndarray, RowMask | None]:
         """
         evaluate function : evaluates a compiled variable free expression over
         the rows. Indexing a parameter out of its range is reported through the
@@ -104,7 +125,7 @@ class Node:
 
     __slots__ = ()
 
-    def evaluate(self, context) -> Block:
+    def evaluate(self, context: Context) -> Block:
 
         raise NotImplementedError
 
@@ -115,11 +136,11 @@ class ConstantNode(Node):
 
     __slots__ = ("python_expression",)
 
-    def __init__(self, expression):
+    def __init__(self, expression: Expression) -> None:
 
         self.python_expression = expression.turn_to_python_expression()
 
-    def evaluate(self, context) -> Block:
+    def evaluate(self, context: Context) -> Block:
 
         value, valid = context.evaluate(self.python_expression)
 
@@ -131,7 +152,9 @@ class VariableNode(Node):
 
     __slots__ = ("index_base", "python_offset", "size")
 
-    def __init__(self, index_base, offset_expression, size):
+    def __init__(
+        self, index_base: int, offset_expression: Expression | None, size: int
+    ) -> None:
 
         self.index_base = index_base
         self.python_offset = (
@@ -141,7 +164,7 @@ class VariableNode(Node):
         )
         self.size = size
 
-    def evaluate(self, context) -> Block:
+    def evaluate(self, context: Context) -> Block:
 
         valid = None
         if self.python_offset is None:
@@ -167,11 +190,11 @@ class AdditionNode(Node):
 
     __slots__ = ("children",)
 
-    def __init__(self, children):
+    def __init__(self, children: list[tuple[int, Node]]) -> None:
 
         self.children = children
 
-    def evaluate(self, context) -> Block:
+    def evaluate(self, context: Context) -> Block:
 
         blocks = []
         for sign, child in self.children:
@@ -184,12 +207,12 @@ class AdditionNode(Node):
 class MultiplicationNode(Node):
     __slots__ = ("left", "right")
 
-    def __init__(self, left, right):
+    def __init__(self, left: Node, right: Node) -> None:
 
         self.left = left
         self.right = right
 
-    def evaluate(self, context) -> Block:
+    def evaluate(self, context: Context) -> Block:
 
         left = self.left.evaluate(context)
         right = self.right.evaluate(context)
@@ -203,12 +226,12 @@ class DivisionNode(Node):
 
     __slots__ = ("numerator", "denominator")
 
-    def __init__(self, numerator, denominator):
+    def __init__(self, numerator: Node, denominator: Node) -> None:
 
         self.numerator = numerator
         self.denominator = denominator
 
-    def evaluate(self, context) -> Block:
+    def evaluate(self, context: Context) -> Block:
 
         numerator = self.numerator.evaluate(context)
         denominator = self.denominator.evaluate(context)
@@ -225,12 +248,12 @@ class PowerNode(Node):
 
     __slots__ = ("child", "exponent")
 
-    def __init__(self, child, exponent):
+    def __init__(self, child: Node, exponent: int) -> None:
 
         self.child = child
         self.exponent = exponent
 
-    def evaluate(self, context) -> Block:
+    def evaluate(self, context: Context) -> Block:
 
         if self.exponent == 0:
             return Block.of_constant(context.nb_rows, context.rank, 1.0)
@@ -258,7 +281,7 @@ class SumNode(Node):
         "time_interval",
     )
 
-    def __init__(self, child, expression):
+    def __init__(self, child: Node, expression: Expression) -> None:
 
         self.child = child
         self.expression = expression
@@ -270,7 +293,7 @@ class SumNode(Node):
         )
         self.line = expression.get_line()
 
-    def _index_values(self, context):
+    def _index_values(self, context: Context) -> tuple[np.ndarray, np.ndarray]:
         """
         The values of the index, laid out along one new axis after the ones
         the outer sums are evaluated over, and the mask of the ones the range
@@ -319,7 +342,7 @@ class SumNode(Node):
 
         return index_values, filled
 
-    def evaluate(self, context) -> Block:
+    def evaluate(self, context: Context) -> Block:
         index_values, filled = self._index_values(context)
         width = index_values.shape[-1]
         if width == 0:
@@ -358,7 +381,7 @@ class SumNode(Node):
 
         return block.summed_over(width, filled)
 
-    def apply_condition(self, definitions, filled):
+    def apply_condition(self, definitions: dict, filled: np.ndarray) -> np.ndarray:
         """
         An index the `where` condition rejects is marked rather than removed,
         so that no row has to be re-packed for the ranges to stay rectangular.
@@ -378,7 +401,12 @@ class SumNode(Node):
         return filled & np.asarray(kept, dtype=bool)
 
 
-def build_node(expression, variables, constants, collected_variables):
+def build_node(
+    expression: Expression,
+    variables: dict[str, dict[str, Variable]],
+    constants: dict,
+    collected_variables: list[list[str]],
+) -> tuple[Node, bool]:
     """
     build_node function : compiles an expression into the tree the evaluation
     walks. Subtrees holding no variable are kept whole, so that a coefficient
@@ -429,7 +457,7 @@ def build_node(expression, variables, constants, collected_variables):
         return ConstantNode(expression), False
 
     if e_type == "u-":
-        return AdditionNode([[-1, sub_nodes[0][0]]]), True
+        return AdditionNode([(-1, sub_nodes[0][0])]), True
 
     if e_type == "+" or e_type == "-":
         return AdditionNode(_flatten_addition(sub_nodes, e_type)), True
@@ -450,26 +478,28 @@ def build_node(expression, variables, constants, collected_variables):
     )
 
 
-def _flatten_addition(sub_nodes, e_type):
+def _flatten_addition(
+    sub_nodes: list[tuple[Node, bool]], e_type: str
+) -> list[tuple[int, Node]]:
     """
     _flatten_addition function : gathers a run of + and - into one list of
     signed operands, so that a long sum of terms is concatenated once
     INPUT:  sub_nodes -> the compiled children with their variable predicate
             e_type -> '+' or '-'
-    OUTPUT: list of [sign, Node]
+    OUTPUT: list of (sign, Node)
     """
 
     signs = [1, 1 if e_type == "+" else -1]
     flattened = []
-    for sign, [node, _] in zip(signs, sub_nodes):
+    for sign, (node, _) in zip(signs, sub_nodes):
         if isinstance(node, AdditionNode) and sign > 0:
             flattened += node.children
         elif isinstance(node, AdditionNode):
             flattened += [
-                [-inner_sign, inner_node] for inner_sign, inner_node in node.children
+                (-inner_sign, inner_node) for inner_sign, inner_node in node.children
             ]
         else:
-            flattened.append([sign, node])
+            flattened.append((sign, node))
 
     return flattened
 
@@ -481,7 +511,7 @@ class Factorize:
     the variables.
     """
 
-    def __init__(self, obj):
+    def __init__(self, obj: Constraint | Objective) -> None:
 
         self.name = None
         self.obj = obj
@@ -494,15 +524,15 @@ class Factorize:
         self.independent_terms = []
         self.quadratic_terms = None
 
-    def get_name(self):
+    def get_name(self) -> str:
 
         return self.name
 
-    def get_line(self):
+    def get_line(self) -> int:
 
         return self.line
 
-    def free_extension(self):
+    def free_extension(self) -> None:
         """
         free_extension function : releases what the extension produced, once it
                                   has been gathered in the matrices
@@ -525,7 +555,9 @@ class Factorize:
 
         return len(self.independent_terms)
 
-    def factorize_constraint(self, variables, constants):
+    def factorize_constraint(
+        self, variables: dict[str, dict[str, Variable]], constants: dict
+    ) -> None:
         """
         factorize_constraint function : compiles both sides of the constraint
         into a single expression, the left hand side minus the right hand side
@@ -540,9 +572,11 @@ class Factorize:
         right, _ = build_node(
             constraint.get_rhs(), variables, constants, self.variables
         )
-        self.node = AdditionNode([[1, left], [-1, right]])
+        self.node = AdditionNode([(1, left), (-1, right)])
 
-    def factorize_objective(self, variables, constants):
+    def factorize_objective(
+        self, variables: dict[str, dict[str, Variable]], constants: dict
+    ) -> None:
         """
         factorize_objective function : compiles the expression of the objective
         INPUT:  variables -> dictionary of <name,identifier> objects
@@ -556,7 +590,9 @@ class Factorize:
             objective.get_expression(), variables, constants, self.variables
         )
 
-    def _row_index_values(self, definitions):
+    def _row_index_values(
+        self, definitions: dict
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int_]], bool]:
         """
         _row_index_values function : the values the index of the constraint
         takes, that is one per row -- they are the rows.
@@ -605,7 +641,7 @@ class Factorize:
 
         return index_values, explicit
 
-    def extend(self, definitions):
+    def extend(self, definitions: dict) -> None:
         """
         extend function : evaluates the compiled expression over every row of
         the constraint at once and gathers the result in the arrays the

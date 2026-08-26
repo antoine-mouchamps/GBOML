@@ -5,8 +5,10 @@
 import numpy as np  # type: ignore
 from scipy.sparse import coo_array  # type: ignore
 
+RowMask = np.ndarray[tuple[int], np.dtype[np.bool_]]
 
-def combine_valid(first, second):
+
+def combine_valid(first: RowMask | None, second: RowMask | None) -> RowMask | None:
     if first is None:
         return second
     if second is None:
@@ -28,7 +30,13 @@ class Term:
 
     __slots__ = ("columns", "filled", "values", "widths")
 
-    def __init__(self, values, columns, widths, filled):
+    def __init__(
+        self,
+        values: np.ndarray,
+        columns: tuple[np.ndarray, ...],
+        widths: tuple[int, ...],
+        filled: np.ndarray,
+    ) -> None:
 
         assert values.ndim > len(widths) and all(
             array.ndim == values.ndim for array in (filled, *columns)
@@ -43,7 +51,7 @@ class Term:
 
         return len(self.columns)
 
-    def scaled(self, factor):
+    def scaled(self, factor: np.ndarray) -> "Term":
 
         return Term(
             # a factor which does not vary along the widths, which trail
@@ -53,11 +61,11 @@ class Term:
             self.filled,
         )
 
-    def negated(self):
+    def negated(self) -> "Term":
 
         return Term(-self.values, self.columns, self.widths, self.filled)
 
-    def widened(self, width, filled):
+    def widened(self, width: int, filled: np.ndarray | None) -> "Term":
         """
         The term a sum gives back when it ends. Its range was the innermost
         axis the body was evaluated over and becomes the outermost width,
@@ -83,7 +91,14 @@ class Block:
 
     __slots__ = ("nb_rows", "constant", "linear", "quadratic", "valid")
 
-    def __init__(self, nb_rows, constant, linear=None, quadratic=None, valid=None):
+    def __init__(
+        self,
+        nb_rows: int,
+        constant: np.ndarray,
+        linear: list[Term] | None = None,
+        quadratic: list[Term] | None = None,
+        valid: RowMask | None = None,
+    ) -> None:
         self.nb_rows = nb_rows
         self.constant = constant
         self.linear = linear if linear is not None else []
@@ -91,7 +106,9 @@ class Block:
         self.valid = valid
 
     @staticmethod
-    def of_constant(nb_rows, rank, value, valid=None):
+    def of_constant(
+        nb_rows: int, rank: int, value: float | np.ndarray, valid: RowMask | None = None
+    ) -> "Block":
         """
         of_constant function : the block a subexpression holding no variable
                                reduces to. The compiled expression gives back
@@ -112,7 +129,9 @@ class Block:
         return Block(nb_rows, value, valid=valid)
 
     @staticmethod
-    def of_variable(nb_rows, rank, columns, valid=None):
+    def of_variable(
+        nb_rows: int, rank: int, columns: int | np.ndarray, valid: RowMask | None = None
+    ) -> "Block":
         """
         of_variable function : the block one variable of the problem reduces
                                to, that is a single degree one entry per row
@@ -153,7 +172,7 @@ class Block:
 
         return 0
 
-    def negated(self):
+    def negated(self) -> "Block":
 
         return Block(
             self.nb_rows,
@@ -163,7 +182,7 @@ class Block:
             self.valid,
         )
 
-    def scaled(self, factor, valid=None):
+    def scaled(self, factor: np.ndarray, valid: RowMask | None = None) -> "Block":
         """
         scaled function : multiplies the whole polynomial by a value which does
                           not depend on the variables.
@@ -182,7 +201,7 @@ class Block:
             self.valid if valid is None else valid,
         )
 
-    def summed_over(self, width, filled):
+    def summed_over(self, width: int, filled: np.ndarray) -> "Block":
         """
         The block a sum reduces to, once its body has been evaluated over the
         range. Only the constant is really summed over the index values : the
@@ -210,7 +229,7 @@ class Block:
             self.valid,
         )
 
-    def constant_over(self, valid):
+    def constant_over(self, valid: RowMask) -> np.ndarray:
         """
         constant_over function : the degree zero part as one value per row the
                                  mask keeps. This is the boundary the shape of
@@ -222,7 +241,7 @@ class Block:
 
         return np.broadcast_to(self.constant, (self.nb_rows,))[valid]
 
-    def assemble(self, valid):
+    def assemble(self, valid: RowMask) -> tuple[coo_array | None, coo_array | None]:
         """
         assemble function : the degree one and the degree two parts as the
         sparse arrays the matrices of the problem are built from, over the rows
@@ -235,7 +254,7 @@ class Block:
         OUTPUT: (coo_array or None, coo_array or None)
         """
 
-        nb_kept_rows = int(np.count_nonzero(valid))
+        nb_kept_rows = np.count_nonzero(valid)
 
         return (
             _build_sparse_array(self.linear, valid, nb_kept_rows, self.nb_rows),
@@ -243,7 +262,7 @@ class Block:
         )
 
 
-def add_blocks(blocks):
+def add_blocks(blocks: list[Block]) -> Block:
     """
     add_blocks function : sums any number of blocks at once.
     INPUT:  blocks -> list of Block objects, all over the same rows
@@ -269,7 +288,7 @@ def add_blocks(blocks):
     return Block(nb_rows, constant, linear, quadratic, valid)
 
 
-def multiply_blocks(left, right):
+def multiply_blocks(left: Block, right: Block) -> Block:
     """
     multiply_blocks function : multiplies two polynomials, the degrees adding
     up. The degree two part is the outer product of the degree one parts along
@@ -304,7 +323,7 @@ def multiply_blocks(left, right):
     return Block(nb_rows, constant, linear, quadratic, valid)
 
 
-def _outer_product(left_term, right_term):
+def _outer_product(left_term: Term, right_term: Term) -> Term:
     """
     Every entry of one degree one term multiplied by every entry of the other.
 
@@ -320,11 +339,11 @@ def _outer_product(left_term, right_term):
     nb_left = len(left_term.widths)
     nb_right = len(right_term.widths)
 
-    def as_left(value):
+    def as_left(value: np.ndarray) -> np.ndarray:
         # the widths of the right operand are new, and come after its own
         return value.reshape(value.shape + (1,) * nb_right)
 
-    def as_right(value):
+    def as_right(value: np.ndarray) -> np.ndarray:
         # the widths of the left operand are new, and come before its own
         rows = value.ndim - nb_right
         return value.reshape(value.shape[:rows] + (1,) * nb_left + value.shape[rows:])
@@ -337,7 +356,9 @@ def _outer_product(left_term, right_term):
     )
 
 
-def _gather_nonzero_terms(terms, valid, nb_rows):
+def _gather_nonzero_terms(
+    terms: list[Term], valid: RowMask, nb_rows: int
+) -> tuple[np.ndarray, ...]:
     """
     _gather_nonzero_terms function : turns a list of terms into flat arrays,
     keeping only the entries whose value is not zero.
@@ -399,7 +420,9 @@ def _gather_nonzero_terms(terms, valid, nb_rows):
     )
 
 
-def _build_sparse_array(terms, valid, nb_kept_rows, nb_rows):
+def _build_sparse_array(
+    terms: list[Term], valid: RowMask, nb_kept_rows: int, nb_rows: int
+) -> coo_array | None:
     """
     _build_sparse_array function : build the terms of a block as a coo_array
     whose first axis is the row and whose other axes are the columns of the
