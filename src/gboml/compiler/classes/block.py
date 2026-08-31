@@ -344,7 +344,8 @@ def _outer_product(left_term: Term, right_term: Term) -> Term:
         return value.reshape(value.shape + (1,) * nb_right)
 
     def as_right(value: np.ndarray) -> np.ndarray:
-        # the widths of the left operand are new, and come before its own
+        # the widths of the left operand are new, and come before its own,
+        # but after the common axes
         rows = value.ndim - nb_right
         return value.reshape(value.shape[:rows] + (1,) * nb_left + value.shape[rows:])
 
