@@ -361,7 +361,6 @@ class SumNode(Node):
             definitions[index_name] = definitions[index_name][..., None]
         definitions[self.index_name] = index_values
 
-        filled = self.apply_condition(definitions, filled)
         if self.python_condition is not None:
             kept = eval(self.python_condition, definitions, {})
             filled = filled & np.asarray(kept, dtype=bool)
