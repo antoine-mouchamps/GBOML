@@ -1,0 +1,18 @@
+// A parameter read by the `where` of a sum. The condition was never given
+// the name of the node holding it, so the parameter it names was refused as
+// a bare name while the same reference works in the range and in the body.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#PARAMETERS
+keep = {1, 0, 1, 1};
+#VARIABLES
+internal : x[4];
+internal : z[T];
+#CONSTRAINTS
+fix_x : x[i] == i + 1 for i in [0:3];
+// keep drops i == 1 : 1 + 3 + 4 == 8 on every row
+cond  : z[t] == sum(x[i] for i in [0:3] where keep[i] == 1);
+#OBJECTIVES
+min : z[t];

@@ -766,7 +766,12 @@ def check_definition_condition(
 
     if type(condition) == Expression:
         check_definition_expression(
-            condition, variables_dict, parameters_dict, reserved, **kwargs
+            condition,
+            variables_dict,
+            parameters_dict,
+            reserved,
+            variables_allowed=False,
+            **kwargs,
         )
     else:
         for child in condition.get_children():
@@ -814,9 +819,10 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                 identifier_referenced_type = identifier_referenced.get_type()
 
                 if not variables_allowed:
-                    error_("ERROR: variables are not "
-                           "allowed in brackets at line "
-                           + str(leaf.get_line()))
+                    error_(
+                        "ERROR: variables are not allowed at line "
+                        + str(leaf.get_line())
+                    )
 
                 if seed_identifier.get_type() != identifier_referenced_type:
                     error_("ERROR: Unmatching type between definition of "
@@ -917,6 +923,19 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                                             in_node_name_parameter,
                                             variable_type,
                                             parent_hood)
+
+            condition = sum_expr.get_condition()
+            if condition is not None:
+                check_definition_condition(
+                    condition,
+                    variables_dict,
+                    parameters_dict,
+                    reserved_sum,
+                    in_node_name_variable=in_node_name_variable,
+                    in_node_name_parameter=in_node_name_parameter,
+                    variable_type=variable_type,
+                    parent_hood=parent_hood,
+                )
 
 
 def add_link_names(link: Hyperedge):
@@ -1047,6 +1066,10 @@ def add_node_names_expression(expr: Expression, node,
             reserved_sum = reserved + [index_name]
             for child in sum_children:
                 add_node_names_expression(child, node, reserved_sum)
+
+            condition = sum_expr.get_condition()
+            if condition is not None:
+                add_node_names_condition(condition, node, reserved_sum)
 
 
 def check_time_horizon(time_horizon: Time):

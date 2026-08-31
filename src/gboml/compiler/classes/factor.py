@@ -362,6 +362,9 @@ class SumNode(Node):
         definitions[self.index_name] = index_values
 
         filled = self.apply_condition(definitions, filled)
+        if self.python_condition is not None:
+            kept = eval(self.python_condition, definitions, {})
+            filled = filled & np.asarray(kept, dtype=bool)
 
         # an entry is really there when this sum keeps it and every outer one
         # already did
@@ -380,25 +383,6 @@ class SumNode(Node):
         )
 
         return block.summed_over(width, filled)
-
-    def apply_condition(self, definitions: dict, filled: np.ndarray) -> np.ndarray:
-        """
-        An index the `where` condition rejects is marked rather than removed,
-        so that no row has to be re-packed for the ranges to stay rectangular.
-        """
-
-        if self.python_condition is None:
-            return filled
-
-        try:
-            kept = eval(self.python_condition, definitions, {})
-        except IndexError:
-            error_(
-                "ERROR: error while evaluating the condition of the sum "
-                "at line %s" % str(self.line)
-            )
-
-        return filled & np.asarray(kept, dtype=bool)
 
 
 def build_node(

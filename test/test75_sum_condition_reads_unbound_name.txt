@@ -1,0 +1,13 @@
+// The `where` of a sum holds expressions the way its range and its body do,
+// and was the last piece of one the definition pass never looked at. A bare
+// name there used to raise a NameError out of the evaluator.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : y[3];
+#CONSTRAINTS
+bad : y[k] >= sum(y[i] for i in [0:2] where i != zzz) for k in [0:2];
+#OBJECTIVES
+min : y[0];

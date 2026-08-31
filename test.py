@@ -1660,6 +1660,60 @@ class CompilerTests(unittest.TestCase):
                 solution["elements"]["A"]["variables"]["y"]["values"],
                 [6.0, 6.0, 6.0])
 
+    def test_the_where_of_a_sum_is_checked_like_the_rest_of_it(self):
+        """ test_the_where_of_a_sum_is_checked_like_the_rest_of_it
+
+        The condition of a sum was the last expression the definition pass
+        never read, one level below the condition of a constraint. A bare
+        name there used to raise a NameError out of the evaluator
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test75_sum_condition_reads_unbound_name.txt',
+             "--linprog"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("Unknown identifier", process.stdout)
+
+    def test_the_where_of_a_sum_refuses_a_variable(self):
+        """ test_the_where_of_a_sum_refuses_a_variable
+
+        A `where` is decided before the problem is built, so a variable in
+        one names nothing to decide it with
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test76_sum_condition_reads_a_variable.txt',
+             "--linprog"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("variables are not allowed", process.stdout)
+
+    def test_the_where_of_a_sum_reads_a_parameter(self):
+        """ test_the_where_of_a_sum_reads_a_parameter
+
+        The condition of a sum was never given the name of the node holding
+        it, so a parameter it reads was refused as a bare name while the same
+        reference works in the range and in the body. keep drops i == 1, so
+        every row holds 1 + 3 + 4
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test77_sum_condition_reads_a_parameter.txt',
+             "--linprog", "--json", "--output",
+             "test/test77_sum_condition_reads_a_parameter"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test77_sum_condition_reads_a_parameter.json", 'r') as j:
+            solution = json.loads(j.read())["solution"]
+            self.assertEqual(
+                solution["elements"]["A"]["variables"]["z"]["values"],
+                [8.0, 8.0, 8.0])
+
 
 class GBOMLpyTest(unittest.TestCase):
     """
