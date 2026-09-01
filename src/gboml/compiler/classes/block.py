@@ -215,7 +215,7 @@ class Block:
         if constant.shape[-1] == 1:
             # the same value on every index, so summing it is counting them
             counted = width if kept is None else kept.sum(axis=-1)
-            constant = constant[..., 0] * counted
+            constant = constant.squeeze(-1) * counted
         else:
             if kept is not None:
                 constant = np.where(kept, constant, 0.0)

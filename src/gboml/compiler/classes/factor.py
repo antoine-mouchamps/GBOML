@@ -301,44 +301,34 @@ class SumNode(Node):
         brings to the longest, marking with NaN what it leaves.
         """
 
-        read = [
+        bound_index_names = [
             index_name
             for index_name in context.index_names
             if self.time_interval.depends_on_index([index_name])
         ]
-        # the range varies exactly where the indexes it reads do, and nowhere
-        # else, so it is laid out over those axes alone
-        outer_shape = (1,) * context.rank
-        for index_name in read:
-            outer_shape = tuple(
-                map(max, outer_shape, context.definitions[index_name].shape)
-            )
+        bound_index_shapes = [
+            context.definitions[index_name].shape for index_name in bound_index_names
+        ]
+        outer_shape = np.broadcast_shapes((1,) * context.rank, *bound_index_shapes)
 
-        if read:
-            # get_range reads one value per row of a flat layout, so those
-            # indexes are handed to it flattened over the axes they span and
-            # its answer is folded back
-            flattened = dict(context.definitions)
-            for index_name in read:
-                flattened[index_name] = np.broadcast_to(
-                    context.definitions[index_name], outer_shape
-                ).reshape(-1)
-            index_range = self.time_interval.get_range(flattened, list_indexes=read[:1])
-        else:
-            index_range = self.time_interval.get_range(
-                context.definitions, list_indexes=[]
-            )
+        flat_definitions = dict(context.definitions)
+        for index_name in bound_index_names:
+            flat_definitions[index_name] = np.broadcast_to(
+                context.definitions[index_name], outer_shape
+            ).ravel()
 
-        index_range = np.asarray(index_range, dtype=float)
-        if index_range.ndim == 1:
-            # the same range on every row, so it is held once and not once per
-            # row, whatever the layout it was asked at
-            outer_shape = (1,) * context.rank
-        index_range = index_range.reshape(outer_shape + index_range.shape[-1:])
+        index_range = np.asarray(
+            self.time_interval.get_range(
+                flat_definitions, list_indexes=bound_index_names
+            ),
+            dtype=float,
+        )
+
+        range_width = index_range.shape[-1]
+        index_range = index_range.reshape(outer_shape + (range_width,))
 
         filled = np.isfinite(index_range)
-        index_values = np.zeros(index_range.shape, dtype=int)
-        np.copyto(index_values, index_range, where=filled, casting="unsafe")
+        index_values = np.where(filled, index_range, 0).astype(int)
 
         return index_values, filled
 
@@ -358,18 +348,20 @@ class SumNode(Node):
         definitions = dict(context.definitions)
 
         for index_name in outer_index_names:
-            definitions[index_name] = definitions[index_name][..., None]
+            definition: np.ndarray = definitions[index_name]
+            definitions[index_name] = definition.reshape(definition.shape + (1,))
         definitions[self.index_name] = index_values
 
         if self.python_condition is not None:
             kept = eval(self.python_condition, definitions, {})
             filled = filled & np.asarray(kept, dtype=bool)
 
-        # an entry is really there when this sum keeps it and every outer one
-        # already did
-        inner_filled = filled
-        if context.filled is not None:
-            inner_filled = context.filled[..., None] & inner_filled
+        if context.filled is None:
+            inner_filled = filled
+        else:
+            outer_filled = context.filled.reshape(context.filled.shape + (1,))
+            inner_filled = outer_filled & filled
+
         inner_filled = None if inner_filled.all() else inner_filled
 
         block = self.child.evaluate(
@@ -402,7 +394,7 @@ def build_node(
     """
 
     e_type = expression.get_type()
-    children = expression.get_children()
+    children: list[Expression] = expression.get_children()
 
     if e_type == "literal":
         seed = expression.get_name()
@@ -472,14 +464,12 @@ def _flatten_addition(
     OUTPUT: list of (sign, Node)
     """
 
-    signs = [1, 1 if e_type == "+" else -1]
+    signs = (1, 1 if e_type == "+" else -1)
     flattened = []
     for sign, (node, _) in zip(signs, sub_nodes):
-        if isinstance(node, AdditionNode) and sign > 0:
-            flattened += node.children
-        elif isinstance(node, AdditionNode):
+        if isinstance(node, AdditionNode):
             flattened += [
-                (-inner_sign, inner_node) for inner_sign, inner_node in node.children
+                (sign * inner_sign, inner) for inner_sign, inner in node.children
             ]
         else:
             flattened.append((sign, node))
@@ -588,10 +578,12 @@ class Factorize:
         index_name = obj.get_index_var()
         condition = obj.get_condition()
         definitions["extension_range"] = ByteArray(1)
-        index_values = obj.get_time_range(definitions)
-        explicit = index_values is not None
+        row_range = obj.get_time_range(definitions)
+        range_is_written = row_range is not None
 
-        if not explicit:
+        if range_is_written:
+            index_values = np.array(row_range)
+        else:
             if self.type_fact == "constraint":
                 expressions = [obj.get_rhs(), obj.get_lhs()]
             else:
@@ -599,30 +591,21 @@ class Factorize:
             if condition is not None:
                 expressions.append(condition)
 
-            depends = any(
-                expression.depends_on_index([index_name])
-                for expression in expressions
+            index_is_read = any(
+                expression.depends_on_index([index_name]) for expression in expressions
             )
-            index_values = range(definitions["T"] if depends else 1)
-
-        index_values = np.array(index_values)
+            nb_rows = definitions["T"] if index_is_read else 1
+            index_values = np.arange(nb_rows)
 
         if condition is not None:
             definitions[index_name] = index_values
-            definitions["extension_range"] = ByteArray(1)
-            try:
-                kept = eval(condition.turn_to_python_expression(), definitions, {})
-            except IndexError:
-                error_(
-                    "ERROR: error while evaluating the condition at line %s"
-                    % (str(obj.get_line()))
-                )
+            kept = eval(condition.turn_to_python_expression(), definitions, {})
             # a condition which does not read the index gives a single bool,
             # keeping either every row or none of them
             kept = np.broadcast_to(np.asarray(kept, dtype=bool), index_values.shape)
             index_values = index_values[kept]
 
-        return index_values, explicit
+        return index_values, range_is_written
 
     def extend(self, definitions: dict) -> None:
         """
@@ -647,7 +630,7 @@ class Factorize:
         else:
             self.extension_type = obj.get_type()
 
-        row_index_values, explicit = self._row_index_values(definitions)
+        row_index_values, range_is_written = self._row_index_values(definitions)
         row_index_name = obj.get_index_var()
         nb_rows = len(row_index_values)
         definitions[row_index_name] = row_index_values
@@ -667,7 +650,7 @@ class Factorize:
 
         if not valid.any():
             dropped = str(row_index_values[~valid])
-            if explicit:
+            if range_is_written:
                 error_(
                     "Constraint : "
                     + str(obj)
