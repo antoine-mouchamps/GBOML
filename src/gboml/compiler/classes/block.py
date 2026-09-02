@@ -17,32 +17,6 @@ def combine_valid(first: RowMask | None, second: RowMask | None) -> RowMask | No
     return first & second
 
 
-def _summed_over_index(
-    values: np.ndarray, kept: np.ndarray | None, width: int, axis: int
-) -> np.ndarray:
-    """
-    Adds `values` up over the values the index of a sum takes, and gives back
-    `values` with the axis of that index gone.
-
-    An array which is the same on every index value is stored with a length of
-    one on that axis : adding it up is then multiplying it by `width`, the
-    number of index values, instead of going through them one by one.
-
-    `kept` marks which index values the sum reaches, None meaning all of them.
-    """
-
-    assert kept is None or kept.shape[axis] == width
-    if values.shape[axis] == 1:
-        counted = width if kept is None else kept.sum(axis=axis)
-        summed = values.squeeze(axis) * counted
-    else:
-        if kept is not None:
-            values = np.where(kept, values, 0.0)
-        summed = values.sum(axis=axis)
-
-    return summed
-
-
 class Term:
     """
     One rectangle of entries, each of them the product of the variables at
@@ -60,11 +34,13 @@ class Term:
     def __init__(
         self,
         values: np.ndarray,
-        columns: tuple[np.ndarray, ...],
-        widths: tuple[int, ...],
-        filled: np.ndarray,
+        columns: tuple[np.ndarray, ...] = (),
+        widths: tuple[int, ...] = (),
+        filled: np.ndarray | None = None,
     ) -> None:
 
+        if filled is None:
+            filled = np.ones((1,) * values.ndim, dtype=bool)
         assert values.ndim > len(widths) and all(
             array.ndim == values.ndim for array in (filled, *columns)
         )
@@ -99,27 +75,38 @@ class Term:
         which is the very same axis : nothing is moved, and only the mask of
         the index values the sum keeps has to be brought in. A term whose
         columns do not read the index is the same entry on every index
-        value, and is added up here instead.
+        value, and is added up here instead ; a constant, having no column at
+        all, always is.
         """
 
         axis = self.values.ndim - len(self.widths) - 1
         if kept is not None:
+            assert kept.shape[axis] == width
             kept = kept.reshape(kept.shape + (1,) * len(self.widths))
 
-        if all(column.shape[axis] == 1 for column in self.columns):
-            values = _summed_over_index(self.values, kept, width, axis)
-            columns = tuple(column.squeeze(axis) for column in self.columns)
-            widths = self.widths
-            # a mask never varies along the index a term is read at, its own
-            # variation being on the widths, so it comes through untouched
-            filled = self.filled.squeeze(axis)
-        else:
-            values = self.values
-            columns = self.columns
-            widths = (width,) + self.widths
-            filled = self.filled if kept is None else self.filled & kept
+        if any(column.shape[axis] != 1 for column in self.columns):
+            return Term(
+                self.values,
+                self.columns,
+                (width,) + self.widths,
+                self.filled if kept is None else self.filled & kept,
+            )
 
-        return Term(values, columns, widths, filled)
+        if self.values.shape[axis] == 1:
+            nb_kept_index_values = width if kept is None else kept.sum(axis=axis)
+            values = self.values.squeeze(axis) * nb_kept_index_values
+        else:
+            values_to_sum = self.values
+            if kept is not None:
+                values_to_sum = np.where(kept, values_to_sum, 0.0)
+            values = values_to_sum.sum(axis=axis)
+
+        return Term(
+            values,
+            tuple(column.squeeze(axis) for column in self.columns),
+            self.widths,
+            self.filled.squeeze(axis),
+        )
 
 
 class Block:
@@ -133,7 +120,7 @@ class Block:
     def __init__(
         self,
         nb_rows: int,
-        constant: np.ndarray,
+        constant: Term,
         linear: list[Term] | None = None,
         quadratic: list[Term] | None = None,
         valid: RowMask | None = None,
@@ -163,7 +150,7 @@ class Block:
         value = np.asarray(value, dtype=float)
         assert value.ndim == rank
 
-        return Block(nb_rows, value, valid=valid)
+        return Block(nb_rows, Term(value), valid=valid)
 
     @staticmethod
     def of_variable(
@@ -186,15 +173,8 @@ class Block:
 
         return Block(
             nb_rows,
-            np.zeros((1,) * rank),
-            [
-                Term(
-                    np.ones((1,) * rank),
-                    (column,),
-                    (),
-                    np.ones((1,) * rank, dtype=bool),
-                )
-            ],
+            Term(np.zeros((1,) * rank)),
+            [Term(np.ones((1,) * rank), (column,))],
             valid=valid,
         )
 
@@ -212,7 +192,7 @@ class Block:
 
         return Block(
             self.nb_rows,
-            -self.constant,
+            self.constant.negated(),
             [term.negated() for term in self.linear],
             [term.negated() for term in self.quadratic],
             self.valid,
@@ -231,7 +211,7 @@ class Block:
 
         return Block(
             self.nb_rows,
-            self.constant * factor,
+            self.constant.scaled(factor),
             [term.scaled(factor) for term in self.linear],
             [term.scaled(factor) for term in self.quadratic],
             self.valid if valid is None else valid,
@@ -249,7 +229,7 @@ class Block:
 
         return Block(
             self.nb_rows,
-            _summed_over_index(self.constant, kept, width, -1),
+            self.constant.summed_over(width, kept),
             [term.summed_over(width, kept) for term in self.linear],
             [term.summed_over(width, kept) for term in self.quadratic],
             self.valid,
@@ -265,7 +245,7 @@ class Block:
         OUTPUT: ndarray of shape (number of rows the mask keeps,)
         """
 
-        return np.broadcast_to(self.constant, (self.nb_rows,))[valid]
+        return np.broadcast_to(self.constant.values, (self.nb_rows,))[valid]
 
     def assemble(self, valid: RowMask) -> tuple[coo_array | None, coo_array | None]:
         """
@@ -299,19 +279,19 @@ def add_blocks(blocks: list[Block]) -> Block:
         return blocks[0]
 
     nb_rows = blocks[0].nb_rows
-    constant = blocks[0].constant
+    constant = blocks[0].constant.values
     linear = list(blocks[0].linear)
     quadratic = list(blocks[0].quadratic)
     valid = blocks[0].valid
     for block in blocks[1:]:
         # every block was evaluated over the same axes, so the constants line
         # up without anything having to be inserted
-        constant = constant + block.constant
+        constant = constant + block.constant.values
         linear += block.linear
         quadratic += block.quadratic
         valid = combine_valid(valid, block.valid)
 
-    return Block(nb_rows, constant, linear, quadratic, valid)
+    return Block(nb_rows, Term(constant), linear, quadratic, valid)
 
 
 def multiply_blocks(left: Block, right: Block) -> Block:
@@ -326,27 +306,29 @@ def multiply_blocks(left: Block, right: Block) -> Block:
 
     nb_rows = left.nb_rows
     valid = combine_valid(left.valid, right.valid)
+    left_constant = left.constant.values
+    right_constant = right.constant.values
 
     if left.degree() == 0:
-        return right.scaled(left.constant, valid)
+        return right.scaled(left_constant, valid)
     if right.degree() == 0:
-        return left.scaled(right.constant, valid)
+        return left.scaled(right_constant, valid)
 
     assert not left.quadratic and not right.quadratic
 
-    constant = left.constant * right.constant
+    constant = left_constant * right_constant
     linear = []
-    if right.constant.any():
-        linear += [term.scaled(right.constant) for term in left.linear]
-    if left.constant.any():
-        linear += [term.scaled(left.constant) for term in right.linear]
+    if right_constant.any():
+        linear += [term.scaled(right_constant) for term in left.linear]
+    if left_constant.any():
+        linear += [term.scaled(left_constant) for term in right.linear]
 
     quadratic = []
     for left_term in left.linear:
         for right_term in right.linear:
             quadratic.append(_outer_product(left_term, right_term))
 
-    return Block(nb_rows, constant, linear, quadratic, valid)
+    return Block(nb_rows, Term(constant), linear, quadratic, valid)
 
 
 def _outer_product(left_term: Term, right_term: Term) -> Term:
@@ -466,6 +448,9 @@ def _build_sparse_array(
 
     if not terms:
         return None
+
+    degree = terms[0].degree()
+    assert degree > 0 and all(term.degree() == degree for term in terms)
 
     term_rows, values, *columns = _gather_nonzero_terms(terms, valid, nb_rows)
     if len(columns) == 2:

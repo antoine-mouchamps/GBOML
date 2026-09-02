@@ -239,7 +239,7 @@ class DivisionNode(Node):
         denominator = self.denominator.evaluate(context)
 
         return numerator.scaled(
-            1.0 / denominator.constant,
+            1.0 / denominator.constant.values,
             combine_valid(numerator.valid, denominator.valid),
         )
 
