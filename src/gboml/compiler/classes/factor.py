@@ -408,7 +408,9 @@ def build_node(
             name = identifier.get_name()
             if node_name in variables and name in variables[node_name]:
                 collected_variables.append([node_name, name])
-                variable_identifier = variables[node_name][name].get_identifier()
+                variable_identifier: Identifier = variables[node_name][
+                    name
+                ].get_identifier()
 
                 return VariableNode(
                     variable_identifier.get_index(),
@@ -439,7 +441,8 @@ def build_node(
         return AdditionNode([(-1, sub_nodes[0][0])]), True
 
     if e_type == "+" or e_type == "-":
-        return AdditionNode(_flatten_addition(sub_nodes, e_type)), True
+        sign = 1 if e_type == "+" else -1
+        return AdditionNode([(1, sub_nodes[0][0]), (sign, sub_nodes[1][0])]), True
 
     if e_type == "*":
         return MultiplicationNode(sub_nodes[0][0], sub_nodes[1][0]), True
@@ -455,29 +458,6 @@ def build_node(
         "The operator '" + str(e_type) + "' is not allowed on variables at "
         "line " + str(expression.get_line())
     )
-
-
-    sub_nodes: list[tuple[Node, bool]], e_type: str
-) -> list[tuple[int, Node]]:
-    """
-    _flatten_addition function : gathers a run of + and - into one list of
-    signed operands, so that a long sum of terms is concatenated once
-    INPUT:  sub_nodes -> the compiled children with their variable predicate
-            e_type -> '+' or '-'
-    OUTPUT: list of (sign, Node)
-    """
-
-    signs = (1, 1 if e_type == "+" else -1)
-    flattened = []
-    for sign, (node, _) in zip(signs, sub_nodes):
-        if isinstance(node, AdditionNode):
-            flattened += [
-                (sign * inner_sign, inner) for inner_sign, inner in node.children
-            ]
-        else:
-            flattened.append((sign, node))
-
-    return flattened
 
 
 class Factorize:
