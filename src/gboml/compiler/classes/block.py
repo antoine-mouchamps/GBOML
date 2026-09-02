@@ -17,15 +17,42 @@ def combine_valid(first: RowMask | None, second: RowMask | None) -> RowMask | No
     return first & second
 
 
+def _summed_over_index(
+    values: np.ndarray, kept: np.ndarray | None, width: int, axis: int
+) -> np.ndarray:
+    """
+    Adds `values` up over the values the index of a sum takes, and gives back
+    `values` with the axis of that index gone.
+
+    An array which is the same on every index value is stored with a length of
+    one on that axis : adding it up is then multiplying it by `width`, the
+    number of index values, instead of going through them one by one.
+
+    `kept` marks which index values the sum reaches, None meaning all of them.
+    """
+
+    assert kept is None or kept.shape[axis] == width
+    if values.shape[axis] == 1:
+        counted = width if kept is None else kept.sum(axis=axis)
+        summed = values.squeeze(axis) * counted
+    else:
+        if kept is not None:
+            values = np.where(kept, values, 0.0)
+        summed = values.sum(axis=axis)
+
+    return summed
+
+
 class Term:
     """
     One rectangle of entries, each of them the product of the variables at
     `columns` scaled by `values`. `columns` is a sequence of one column array
     for a degree one term, of two for a degree two one. `filled` is false on
     the entries a `where` condition rejected and on the ones a ragged range
-    does not reach. `widths` holds one width per sum the term has come out of,
-    outermost first : the entries of a row are laid out over all of them, so a
-    row carries prod(widths) of them.
+    does not reach. `widths` holds one width per sum whose index the columns
+    read, outermost first : a sum they ignore is summed away when it ends. The
+    entries of a row are laid out over all of the widths, so a row carries
+    prod(widths) of them.
     """
 
     __slots__ = ("columns", "filled", "values", "widths")
@@ -65,22 +92,34 @@ class Term:
 
         return Term(-self.values, self.columns, self.widths, self.filled)
 
-    def widened(self, width: int, filled: np.ndarray | None) -> "Term":
+    def summed_over(self, width: int, kept: np.ndarray | None) -> "Term":
         """
         The term a sum gives back when it ends. Its range was the innermost
         axis the body was evaluated over and becomes the outermost width,
         which is the very same axis : nothing is moved, and only the mask of
-        the index values the sum keeps has to be brought in.
+        the index values the sum keeps has to be brought in. A term whose
+        columns do not read the index is the same entry on every index
+        value, and is added up here instead.
         """
 
-        return Term(
-            self.values,
-            self.columns,
-            (width,) + self.widths,
-            self.filled
-            if filled is None
-            else self.filled & filled.reshape(filled.shape + (1,) * len(self.widths)),
-        )
+        axis = self.values.ndim - len(self.widths) - 1
+        if kept is not None:
+            kept = kept.reshape(kept.shape + (1,) * len(self.widths))
+
+        if all(column.shape[axis] == 1 for column in self.columns):
+            values = _summed_over_index(self.values, kept, width, axis)
+            columns = tuple(column.squeeze(axis) for column in self.columns)
+            widths = self.widths
+            # a mask never varies along the index a term is read at, its own
+            # variation being on the widths, so it comes through untouched
+            filled = self.filled.squeeze(axis)
+        else:
+            values = self.values
+            columns = self.columns
+            widths = (width,) + self.widths
+            filled = self.filled if kept is None else self.filled & kept
+
+        return Term(values, columns, widths, filled)
 
 
 class Block:
@@ -107,14 +146,14 @@ class Block:
 
     @staticmethod
     def of_constant(
-        nb_rows: int, rank: int, value: float | np.ndarray, valid: RowMask | None = None
+        nb_rows: int, rank: int, value: np.ndarray, valid: RowMask | None = None
     ) -> "Block":
         """
         of_constant function : the block a subexpression holding no variable
                                reduces to. The compiled expression gives back
-                               either a single value, whatever the shape it is
-                               written in, or one value per position of the
-                               rank it was evaluated at
+                               one value per position of the rank it was
+                               evaluated at, an axis it does not vary along
+                               being length one
         INPUT:  nb_rows -> number of rows
                 rank -> number of axes the expression is evaluated over
                 value -> the value the compiled expression evaluated to
@@ -122,31 +161,28 @@ class Block:
         OUTPUT: Block
         """
         value = np.asarray(value, dtype=float)
-        assert value.ndim in (0, rank)
-        if value.ndim == 0:
-            value = value.reshape((1,) * rank)
+        assert value.ndim == rank
 
         return Block(nb_rows, value, valid=valid)
 
     @staticmethod
     def of_variable(
-        nb_rows: int, rank: int, columns: int | np.ndarray, valid: RowMask | None = None
+        nb_rows: int, rank: int, column: np.ndarray, valid: RowMask | None = None
     ) -> "Block":
         """
         of_variable function : the block one variable of the problem reduces
-                               to, that is a single degree one entry per row
+                               to, that is a single degree one entry per
+                               position
         INPUT:  nb_rows -> number of rows
                 rank -> number of axes the expression is evaluated over
-                columns -> the column of the variable, one per position or one
-                           for all of them
+                column -> the column the variable is read at, one per position
+                          or one for all of them
                 valid -> mask of the rows still valid, or None
         OUTPUT: Block
         """
 
-        columns = np.asarray(columns, dtype=int)
-        assert columns.ndim in (0, rank)
-        if columns.ndim == 0:
-            columns = columns.reshape((1,) * rank)
+        column = np.asarray(column, dtype=int)
+        assert column.ndim == rank
 
         return Block(
             nb_rows,
@@ -154,7 +190,7 @@ class Block:
             [
                 Term(
                     np.ones((1,) * rank),
-                    (columns,),
+                    (column,),
                     (),
                     np.ones((1,) * rank, dtype=bool),
                 )
@@ -204,28 +240,18 @@ class Block:
     def summed_over(self, width: int, filled: np.ndarray) -> "Block":
         """
         The block a sum reduces to, once its body has been evaluated over the
-        range. Only the constant is really summed over the index values : the
-        terms keep one entry per index value, for the matrix to add up later,
-        and `valid` is a row mask already.
+        range. Whatever does not read the index is actually summed over its
+        values, A term which does read the index keeps one entry per index
+        value, for the matrix to add up later. `valid` is a row mask already.
         """
 
         kept = None if bool(filled.all()) else filled
 
-        constant = self.constant
-        if constant.shape[-1] == 1:
-            # the same value on every index, so summing it is counting them
-            counted = width if kept is None else kept.sum(axis=-1)
-            constant = constant.squeeze(-1) * counted
-        else:
-            if kept is not None:
-                constant = np.where(kept, constant, 0.0)
-            constant = constant.sum(axis=-1)
-
         return Block(
             self.nb_rows,
-            constant,
-            [term.widened(width, kept) for term in self.linear],
-            [term.widened(width, kept) for term in self.quadratic],
+            _summed_over_index(self.constant, kept, width, -1),
+            [term.summed_over(width, kept) for term in self.linear],
+            [term.summed_over(width, kept) for term in self.quadratic],
             self.valid,
         )
 
@@ -334,8 +360,8 @@ def _outer_product(left_term: Term, right_term: Term) -> Term:
     makes sum(x[i]*y[i] for i) the dot product.
     """
 
-    [left_columns] = left_term.columns
-    [right_columns] = right_term.columns
+    [left_column] = left_term.columns
+    [right_column] = right_term.columns
     nb_left = len(left_term.widths)
     nb_right = len(right_term.widths)
 
@@ -351,7 +377,7 @@ def _outer_product(left_term: Term, right_term: Term) -> Term:
 
     return Term(
         as_left(left_term.values) * as_right(right_term.values),
-        (as_left(left_columns), as_right(right_columns)),
+        (as_left(left_column), as_right(right_column)),
         left_term.widths + right_term.widths,
         as_left(left_term.filled) & as_right(right_term.filled),
     )

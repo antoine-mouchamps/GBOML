@@ -1,0 +1,45 @@
+// A sum whose body does not read the index of the sum. Every index value then
+// gives the very same entry, so block.py's Term.widened adds them up on the
+// spot rather than writing one entry per index for the matrix to add up : a
+// collapsed term carries one axis fewer than a widened one, and this pins the
+// ways the count can be reached and the product that spreads a collapsed term
+// against a widened one.
+//
+// x is [1, 2, 3] and y is [4, 5], so with a range of 4 whole index values
+// a == 4*x == [4, 8, 12], with a range which stops at the row
+// b == (t+1)*x == [1, 4, 9], with a condition keeping two of them
+// c == 2*x == [2, 4, 6], with a coefficient which varies along the index
+// while the column does not e == (1+2)*x == [3, 6, 9], and d == 2*x * (4+5)
+// == [18, 36, 54]
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#PARAMETERS
+N = 4;
+M = 2;
+#VARIABLES
+internal : x[T];
+internal : y[M];
+internal : a[T];
+internal : b[T];
+internal : c[T];
+internal : d[T];
+internal : e[T];
+#CONSTRAINTS
+fix_x  : x[t] == t + 1;
+fix_y  : y[j] == j + 4 for j in [0:M-1];
+// a product of two distinct variables is never recognised as convex, so both
+// of them have to be bounded on each side
+lo_x   : x[t] >= 0;
+up_x   : x[t] <= 10;
+lo_y   : y[j] >= 0  for j in [0:M-1];
+up_y   : y[j] <= 10 for j in [0:M-1];
+
+whole  : a[t] == sum(x[t] for i in [0:N-1]);
+ragged : b[t] == sum(x[t] for i in [0:t]);
+cond   : c[t] == sum(x[t] for i in [0:N-1] where i <= 1);
+weight : e[t] == sum((i + 1) * x[t] for i in [0:N-1] where i <= 1);
+spread : d[t] == sum(x[t] for i in [0:M-1]) * sum(y[j] for j in [0:M-1]);
+#OBJECTIVES
+min cost: d[t];

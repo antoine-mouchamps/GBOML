@@ -1016,6 +1016,42 @@ class CompilerTests(unittest.TestCase):
             self.assertAlmostEqual(variables["z"]["values"][0], 54.0,
                                    places=4)
 
+    def test_a_sum_body_which_ignores_its_index(self):
+        """ test_a_sum_body_which_ignores_its_index
+
+        Tests a sum whose body does not read the index of the sum. Every index
+        value gives the very same entry, so block.py's Term.widened adds them
+        up on the spot rather than writing one entry per index for the matrix
+        to add up, which leaves the term one axis fewer than a widened one :
+        the product below spreads such a collapsed term against a widened one
+        in _outer_product, where getting the axes wrong is a wrong number and
+        not a crash. x is [1, 2, 3] and y is [4, 5], so a == 4*x, b over a
+        range which stops at the row == (t+1)*x, c under a condition keeping
+        two index values == 2*x, e under a coefficient which varies along
+        the index while the column does not == (1+2)*x, and d == 2*x * (4+5)
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test78_a_sum_body_which_ignores_its_index.txt', "--gurobi",
+             "--json", "--output", "test/test78_a_sum_body_which_ignores_its_index"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        return_code = process.returncode
+        self.assertEqual(return_code, 0)
+
+        with open("test/test78_a_sum_body_which_ignores_its_index.json", 'r') as j:
+            contents = json.loads(j.read())
+            solution = contents["solution"]
+            self.assertAlmostEqual(solution["objective"], 108.0, places=4)
+            variables = solution["elements"]["A"]["variables"]
+            self.assertEqual(variables["x"]["values"], [1.0, 2.0, 3.0])
+            self.assertEqual(variables["y"]["values"], [4.0, 5.0])
+            self.assertEqual(variables["a"]["values"], [4.0, 8.0, 12.0])
+            self.assertEqual(variables["b"]["values"], [1.0, 4.0, 9.0])
+            self.assertEqual(variables["c"]["values"], [2.0, 4.0, 6.0])
+            self.assertEqual(variables["e"]["values"], [3.0, 6.0, 9.0])
+            self.assertEqual(variables["d"]["values"], [18.0, 36.0, 54.0])
+
     def test_quadratic_ragged_sum(self):
         """ test_quadratic_ragged_sum
 

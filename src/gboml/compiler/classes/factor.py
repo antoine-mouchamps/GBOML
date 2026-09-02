@@ -99,19 +99,23 @@ class Context:
 
     def evaluate(
         self, python_expression: CodeType
-    ) -> tuple[float | np.ndarray, RowMask | None]:
+    ) -> tuple[np.ndarray, RowMask | None]:
         """
         evaluate function : evaluates a compiled variable free expression over
-        the rows. Indexing a parameter out of its range is reported through the
-        `extension_range` mask the generated code writes into, which is
-        returned alongside the value rather than kept in shared state.
+        the rows. The value comes back at the rank it was evaluated at, an
+        expression reading no index at all being the one which is rankless and
+        has to be lifted. Indexing a parameter out of its range is reported
+        through the `extension_range` mask the generated code writes into,
+        which is returned alongside the value rather than kept in shared state.
         INPUT:  python_expression -> compiled python expression
-        OUTPUT: value (scalar or ndarray), mask of the rows still valid or None
+        OUTPUT: value of rank axes, mask of the rows still valid or None
         """
 
         mask = ByteArray(self.rank)
         self.definitions["extension_range"] = mask
-        value = eval(python_expression, self.definitions, {})
+        value = np.asarray(eval(python_expression, self.definitions, {}))
+        if value.ndim == 0:
+            value = value.reshape((1,) * self.rank)
         if mask.array.all():
             return value, None
 
@@ -148,7 +152,7 @@ class ConstantNode(Node):
 
 
 class VariableNode(Node):
-    """One variable of the problem, giving a single column per row."""
+    """One variable of the problem, giving one column per position."""
 
     __slots__ = ("index_base", "python_offset", "size")
 
@@ -168,10 +172,9 @@ class VariableNode(Node):
 
         valid = None
         if self.python_offset is None:
-            index_offset = 0
+            index_offset = np.zeros((1,) * context.rank, dtype=int)
         else:
             index_offset, valid = context.evaluate(self.python_offset)
-            index_offset = np.asarray(index_offset)
             in_bounds = (0 <= index_offset) & (index_offset < self.size)
             if not np.all(in_bounds):
                 # an index out of range invalidates its row, and is clamped so
@@ -185,8 +188,7 @@ class VariableNode(Node):
 
 
 class AdditionNode(Node):
-    """A run of + and - gathered in one node, so the terms of a long sum of
-    products are concatenated once instead of once per operand."""
+    """Signed operands added together, one of them only for a unary minus."""
 
     __slots__ = ("children",)
 
@@ -256,7 +258,9 @@ class PowerNode(Node):
     def evaluate(self, context: Context) -> Block:
 
         if self.exponent == 0:
-            return Block.of_constant(context.nb_rows, context.rank, 1.0)
+            return Block.of_constant(
+                context.nb_rows, context.rank, np.ones((1,) * context.rank)
+            )
 
         result = self.child.evaluate(context)
         for _ in range(self.exponent - 1):
@@ -453,7 +457,6 @@ def build_node(
     )
 
 
-def _flatten_addition(
     sub_nodes: list[tuple[Node, bool]], e_type: str
 ) -> list[tuple[int, Node]]:
     """
