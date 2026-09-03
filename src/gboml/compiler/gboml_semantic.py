@@ -201,6 +201,12 @@ def add_node_in_variable_index(node):
         if id_expression is not None:
             add_node_names_expression(id_expression, node, [])
 
+        child_identifier = var.get_child_assignment()
+        if child_identifier is not None:
+            child_expression = child_identifier.get_expression()
+            if child_expression is not None:
+                add_node_names_expression(child_expression, node, [])
+
 
 def check_and_extend_parameters_in_edges(edge_list: list,
                                          definitions: dict,

@@ -1,0 +1,15 @@
+#TIMEHORIZON T = 2;
+
+// len belongs to REPRO, and is read bare on both sides of the arrow
+#NODE REPRO
+    #PARAMETERS
+        len = 2;
+    #NODE P
+        #VARIABLES
+            internal : x[2];
+        #CONSTRAINTS
+            x[t] == 3;
+    #VARIABLES
+        internal : y[len] <- P.x[len];
+    #OBJECTIVES
+        min : y[t];

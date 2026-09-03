@@ -403,6 +403,29 @@ class CompilerTests(unittest.TestCase):
         return_code = process.returncode
         self.assertEqual(return_code, 0)
 
+    def test_an_assignment_reads_the_node_parameters_on_both_sides(self):
+        """ test_an_assignment_reads_the_node_parameters_on_both_sides
+
+        Only the left of an assignment had its bare names given the node
+        holding it, so a parameter of that node read on the right was refused
+        unless it was written qualified. Same declaration, same scope.
+
+        """
+        process = subprocess.run(
+            ['gboml', 'test/test95_assignment_reads_a_node_parameter.txt',
+             "--linprog", "--json", "--output",
+             "test/test95_assignment_reads_a_node_parameter"],
+            stdout=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(process.returncode, 0)
+
+        with open("test/test95_assignment_reads_a_node_parameter.json",
+                  'r') as j:
+            variables = json.loads(
+                j.read())["solution"]["elements"]["REPRO"]["variables"]
+
+        self.assertEqual(variables["y"]["values"], [3.0, 3.0])
+
     def test_single_obj_constr(self):
         """ test_single_obj_constr
 
