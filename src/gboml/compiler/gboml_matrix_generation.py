@@ -290,6 +290,7 @@ def matrix_generation_c_Q(root: Program) -> tuple:
         (quadratic_values, (quadratic_rows, quadratic_columns_i, quadratic_columns_j)),
         shape=(number_of_objectives, nb_variables, nb_variables),
     )
+    root.free_factors_objectives()
 
     return sparse_matrix, indep_terms, quadratic_objective, alone_indep_terms
 
