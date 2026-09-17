@@ -315,14 +315,13 @@ class Block:
         The values the row index takes, and the rows where `self.kept_rows` holds.
         Every term keeps its evaluation until `assemble` reads it.
         """
-        terms = self.terms
         # checked once here, so that every read of a value in the evaluation trusts it
         check_parameter_values(
             rows.parameters_read.union(
                 self.kept_rows.parameters_read,
                 *(
                     expression.parameters_read
-                    for term in terms
+                    for term in self.terms
                     for expression in (term.coefficient, *term.ranges, *term.variables)
                 ),
             ),
@@ -337,8 +336,12 @@ class Block:
             return row_index_values, np.zeros(0, dtype=bool)
 
         context = context.widened(rows, row_index_values, np.ones(nb_rows, dtype=bool))
-        valid = np.broadcast_to(self.kept_rows.evaluate_over(context).astype(bool), (nb_rows,))
-        for term in terms:
+        valid = self.kept_rows.evaluate_over(context).astype(bool)
+        if rows.condition is not None:
+            # a row whose `where` reads an entry that does not exist is dropped, as if the body read it
+            valid = valid & (rows.condition.missing_entry_count.evaluate_over(context) == 0)
+        valid = np.broadcast_to(valid, (nb_rows,))
+        for term in self.terms:
             term.evaluate_over(context)
         return row_index_values, valid
 

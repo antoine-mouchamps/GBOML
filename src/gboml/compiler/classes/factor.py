@@ -194,11 +194,6 @@ def build_node(
         # the degree check gave a power the degree of its base times its exponent
         return PowerNode(build(children[0]), expression.degree // children[0].degree)
 
-    error_(
-        "The operator '" + str(e_type) + "' is not allowed on variables at "
-        "line " + str(expression.get_line())
-    )
-
 
 class Factorize:
     """
@@ -322,13 +317,6 @@ class Factorize:
         """
 
         obj = self.obj
-        if self.rows.missing_entry_count.evalf(parameter_values, self.line) > 0:
-            error_(
-                "ERROR: the range or the condition of the rows of "
-                + str(obj)
-                + " reads a table outside of its entries at line "
-                + str(self.line)
-            )
         row_index_values, valid = self.block.evaluate_over(
             self.rows, parameter_values, cache, self.line
         )

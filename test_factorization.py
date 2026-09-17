@@ -506,9 +506,26 @@ class BehaviourChangeTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(result[5], [3.0, 7.0])
 
-    def test_a_read_outside_a_table_in_the_condition_of_the_rows_is_an_error(self):
-        with self.assertRaises(SystemExit):
-            compile_model(model_text("c : x[t] <= 1 where n[t+1] > 0;", "n = {0, 1, 2};"))
+    def test_a_read_outside_a_table_in_the_condition_of_the_rows_drops_the_row(self):
+        result, _ = compile_model(model_text("c : x[t] <= 1 where n[t+1] > 0;", "n = {0, 1, 2};"))
+        np.testing.assert_array_equal(result[5], [1.0, 1.0])
+
+    def test_a_read_of_a_missing_entry_that_does_not_depend_on_the_row_is_an_error(self):
+        cases = {
+            "c : x[t] <= cap[5];": "A.cap[5]",
+            "c : x[5] <= 1;": "A.x[5]",
+            "c : x[t] <= cap[n];": "A.cap[A.n]",
+            "c : x[i] <= 1 for i in [0:cap[5]];": "A.cap[5]",
+            "c : x[i] <= 1 for i in [cap[5]:2];": "A.cap[5]",
+            "c : x[t] <= sum(cap[i] for i in [0:5]);": "A.cap[",
+        }
+        for constraint, read in cases.items():
+            printed = io.StringIO()
+            with self.subTest(constraint=constraint), contextlib.redirect_stdout(printed):
+                with self.assertRaises(SystemExit):
+                    compile_gboml(write_model(model_text(constraint, "cap = {1, 2, 3};\nn = 5;")))
+            self.assertIn(read, printed.getvalue())
+            self.assertIn("reads an entry that does not exist", printed.getvalue())
 
     def test_a_variable_raised_to_zero_is_one(self):
         result, _ = compile_model(model_text("c : x[t]**0 + y[t] <= 3;"))

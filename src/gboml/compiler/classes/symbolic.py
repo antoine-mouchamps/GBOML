@@ -545,6 +545,17 @@ class Indexed(Composite):
     def compute(self, context: Context) -> np.ndarray:
         """The entries of the base at the positions its indexes read: columns for a variable, values for a table."""
         table = self.base.entry_values(context)
+        row_index = Idx("t", self.table)
+        if all(value_range.index != row_index for value_range in context.ranges_read_by(self)):
+            # a position that does not depend on the row has no row to drop when its entry does not exist
+            positions = np.asarray(self.indexes[0].evaluate_over(context))
+            missing = (positions < 0) | (positions >= len(table))
+            if context.filled is not None:
+                missing = missing & context.filled
+            if missing.any():
+                error_(
+                    "ERROR: " + repr(self) + " reads an entry that does not exist at line " + str(context.line)
+                )
         return table[context.read_positions(self.indexes[0], len(table))]
 
     def __repr__(self) -> str:
