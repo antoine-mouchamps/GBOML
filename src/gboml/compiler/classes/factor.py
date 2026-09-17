@@ -213,7 +213,6 @@ class Factorize:
         self.obj = obj
         self.block = None
         self.rows = None
-        self.reads_out_of_range = None
         self.variables = []
         self.line = obj.get_line()
         if type(obj) == Objective:
@@ -273,7 +272,6 @@ class Factorize:
         left = build_node(constraint.get_lhs(), scope, self.variables)
         right = build_node(constraint.get_rhs(), scope, self.variables)
         self.block = AdditionNode([(1, left), (-1, right)]).factorize()
-        self.reads_out_of_range = self.block.reads_out_of_range
 
     def factorize_objective(self, scope: Scope) -> None:
         """
@@ -290,7 +288,6 @@ class Factorize:
         self.block = build_node(
             objective.get_expression(), scope, self.variables
         ).factorize()
-        self.reads_out_of_range = self.block.reads_out_of_range
 
     def index_is_read(self) -> bool:
         """Whether the text or the `where` condition reads the index, which gives one row per time step."""
@@ -308,26 +305,13 @@ class Factorize:
 
     def derivative(self, target: "ParameterSymbol | Indexed") -> Block:
         """The block with every coefficient differentiated with respect to a parameter or to one entry of a table."""
-        structure_parameters = self.rows.parameters_read | self.reads_out_of_range.parameters_read
-        if not target.parameters_read.isdisjoint(structure_parameters):
-            error_(
-                "ERROR: the derivative with respect to "
-                + repr(target)
-                + " can not be taken, since it decides which rows or which entries are read at line "
-                + str(self.line)
-            )
+        self.rows.check_does_not_read(target, self.line)
+        self.block.kept_rows.check_does_not_read(target, self.line)
         return self.block.derivative(target)
 
     def replace(self, replacements: dict["ParameterSymbol", "Expr"]) -> None:
-        """Replaces every parameter of `replacements` in the coefficients of the block."""
-        structure_parameters = self.rows.parameters_read | self.reads_out_of_range.parameters_read
-        if not replacements.keys().isdisjoint(structure_parameters):
-            error_(
-                "ERROR: the parameter "
-                + ", ".join(map(repr, replacements.keys() & structure_parameters))
-                + " can not be replaced, since it decides which rows or which entries are read at line "
-                + str(self.line)
-            )
+        """Replaces every parameter of `replacements` in the rows and in the block."""
+        self.rows = self.rows.replace(replacements)
         self.block = self.block.replace(replacements)
 
     def extend(self, parameter_values: dict, cache: dict) -> None:
@@ -338,7 +322,7 @@ class Factorize:
         """
 
         obj = self.obj
-        if self.rows.reads_out_of_range.evalf(parameter_values, self.line) > 0:
+        if self.rows.missing_entry_count.evalf(parameter_values, self.line) > 0:
             error_(
                 "ERROR: the range or the condition of the rows of "
                 + str(obj)
@@ -346,7 +330,7 @@ class Factorize:
                 + str(self.line)
             )
         row_index_values, valid = self.block.evaluate_over(
-            self.rows, self.reads_out_of_range, parameter_values, cache, self.line
+            self.rows, parameter_values, cache, self.line
         )
 
         if len(row_index_values) > 0 and not valid.any():

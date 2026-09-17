@@ -52,10 +52,14 @@ class ExpressionTests(unittest.TestCase):
     def value_range(self, index, end, condition=None):
         return Range(index, self.number(0), self.expression(end), self.number(1), condition)
 
-    def test_a_read_at_a_fixed_position_counts_its_reads_out_of_range_while_built(self):
-        self.assertEqual(self.read(self.x, 2).reads_out_of_range, self.number(0))
-        self.assertEqual(self.read(self.x, 3).reads_out_of_range, self.number(1))
-        self.assertNotIsInstance(self.read(self.x, self.t).reads_out_of_range, Number)
+    def test_a_read_at_a_fixed_position_counts_its_reads_of_missing_entries_while_built(self):
+        self.assertEqual(self.read(self.x, 2).missing_entry_count, self.number(0))
+        self.assertEqual(self.read(self.x, 3).missing_entry_count, self.number(1))
+        self.assertNotIsInstance(self.read(self.x, self.t).missing_entry_count, Number)
+
+    def test_a_replacement_of_another_shape_is_refused(self):
+        with self.assertRaises(SystemExit):
+            self.times(self.p, self.q).replace({self.p: self.cap})
 
     def test_numbers_fold(self):
         self.assertEqual(self.plus(2, 3), self.number(5))

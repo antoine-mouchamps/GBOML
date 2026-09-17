@@ -280,6 +280,13 @@ class ParameterValueTests(unittest.TestCase):
         [term] = derived.linear.values()
         self.assertAlmostEqual(term.coefficient.evalf(values), 25 * 1.07**24)
 
+    def test_a_factor_refuses_a_replacement_of_another_shape(self):
+        factors, _ = factorize_model(model_text("c : a*x[t] <= 1;", "a = 3;\ncap = {1, 2};"))
+        factor = factors["c"]
+        table = factor.block.constant.coefficient.table
+        with self.assertRaises(SystemExit):
+            factor.replace({ParameterSymbol("A.a", (), table): ParameterSymbol("A.cap", (2,), table)})
+
     def test_the_derivative_refuses_a_parameter_deciding_the_rows(self):
         factors, _ = factorize_model(model_text("c : a*x[t] <= 1 where t < a;", "a = 2;"))
         factor = factors["c"]
@@ -352,12 +359,29 @@ class GraphParameterTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(SystemExit):
                 graph.set_parameter_value(path, 3)
 
-    def test_a_parameter_deciding_the_rows_or_the_entries_read_can_not_be_replaced(self):
+    def test_a_replaced_parameter_deciding_the_entries_read_drops_the_rows_reading_out_of_bounds(self):
         graph = build_graph(model_text("c : sum(x[i] for i in [0:n]) + y[t+k] <= 1;", "n = 1;\nk = 0;"))
         one = graph.add_parameter("A.one", 1)
-        for path in ("A.n", "A.k"):
-            with self.subTest(path=path), self.assertRaises(SystemExit):
-                graph.replace_parameter(path, graph.parameter(path) + one)
+        graph.replace_parameter("A.k", graph.parameter("A.k") + one)
+        graph.replace_parameter("A.n", graph.parameter("A.n") + one)
+        with contextlib.redirect_stdout(io.StringIO()):
+            graph.generate_matrices()
+        # the row reading y[3] is dropped
+        np.testing.assert_array_equal(
+            graph.matrix_a_ineq.toarray(), [[1, 1, 1, 0, 1, 0], [1, 1, 1, 0, 0, 1]]
+        )
+
+    def test_a_replacement_keeps_the_rows_of_the_model_it_builds(self):
+        graph = build_graph(model_text("c : a*x[t+2] + x[t] <= 1;", "a = 3;"))
+        self.assertEqual(graph.matrix_a_ineq.shape[0], 1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            derivative = graph.derivative("A.a")
+        self.assertEqual(derivative["matrix_a_ineq"].shape[0], 1)
+        # the term reading x[t+2] disappears, so no row is dropped any more
+        graph.replace_parameter("A.a", graph.parameter("A.a") * 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            graph.generate_matrices()
+        self.assertEqual(graph.matrix_a_ineq.shape[0], 3)
 
     def test_an_added_parameter_needs_a_new_name_in_an_existing_element(self):
         with self.assertRaises(SystemExit):

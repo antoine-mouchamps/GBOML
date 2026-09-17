@@ -160,7 +160,7 @@ class Context:
                     "ERROR: an index takes a value which is not an integer at line "
                     + str(self.line)
                 )
-        # a row reading outside of the table is dropped by its reads out of range, whatever is read here
+        # a row reading a missing entry is dropped through missing_entry_count, whatever is read here
         return np.clip(values.astype(int), 0, max(size - 1, 0))
 
 
@@ -223,6 +223,15 @@ class Expr:
 
     def replace(self, replacements: dict["Idx | ParameterSymbol", "Expr"]) -> "Expr":
         """The expression with every index or parameter of `replacements` replaced, a letter bound by a sum included."""
+        for name, replacement in replacements.items():
+            if replacement.value_shape() != name.value_shape():
+                error_(
+                    "ERROR: "
+                    + repr(name)
+                    + " can not be replaced by "
+                    + repr(replacement)
+                    + ", whose value has another shape"
+                )
         replaced = frozenset(replacements)
         results = {}
 
@@ -248,13 +257,14 @@ class Expr:
         """This expression rebuilt from its arguments, each of them replaced through `visit`."""
         error_("INTERNAL ERROR: " + repr(self) + " can not be replaced")
 
-    def check_does_not_read(self, target: "ParameterSymbol | Indexed") -> None:
-        """Refuses a derivative with respect to `target` when it decides which entries this index or range reads."""
+    def check_does_not_read(self, target: "ParameterSymbol | Indexed", line: int = 0) -> None:
+        """Refuses a derivative with respect to `target` when it decides which entries this expression reads or which rows it keeps."""
         if not target.parameters_read.isdisjoint(self.parameters_read):
             error_(
                 "ERROR: the derivative with respect to "
                 + repr(target)
-                + " can not be taken, since it decides which entries are read"
+                + " can not be taken, since it decides which entries are read or which rows are kept"
+                + (" at line " + str(line) if line else "")
             )
 
     def derivative(self, target: "ParameterSymbol | Indexed") -> "Expr":
@@ -270,8 +280,8 @@ class Expr:
         return self._derivative(target)
 
     @property
-    def reads_out_of_range(self) -> "Expr":
-        """The number of tables or variables this expression reads outside of their entries."""
+    def missing_entry_count(self) -> "Expr":
+        """The number of reads of a table or a variable outside of its entries, one number per value of the indexes read."""
         return Number(0, self.table)
 
     def _derivative(self, target: "ParameterSymbol | Indexed") -> "Expr":
@@ -298,6 +308,20 @@ class Expr:
         """The values of the expression over the context."""
         error_("INTERNAL ERROR: " + repr(self) + " can not be evaluated")
 
+    def value_shape(self, line: int = 0) -> tuple[int, ...]:
+        """The shape of the value of this expression, `()` for a number."""
+        entry = Idx("entry", self.table)
+        read = self.read_at((entry,))
+        if read is self:
+            return ()
+        lengths = _lengths_read_at(read, entry)
+        if len(lengths) != 1:
+            error_(
+                "ERROR: tables of different lengths are combined entry by entry"
+                + (" at line " + str(line) if line else "")
+            )
+        return (lengths.pop(),)
+
     def evalf(
         self, parameter_values: dict[str, float | np.ndarray], line: int = 0
     ) -> float | np.ndarray:
@@ -310,13 +334,7 @@ class Expr:
         if read is self:
             context = Context(parameter_values, (), {}, {}, line=line)
         else:
-            lengths = _lengths_read_at(read, entry)
-            if len(lengths) != 1:
-                error_(
-                    "ERROR: tables of different lengths are combined at line "
-                    + str(line)
-                )
-            [length] = lengths
+            [length] = self.value_shape(line)
             entries = Range(
                 entry,
                 Number(0, self.table),
@@ -331,7 +349,7 @@ class Expr:
                 ranges=(entries,),
                 line=line,
             )
-        if np.any(read.reads_out_of_range.evaluate_over(context)):
+        if np.any(read.missing_entry_count.evaluate_over(context)):
             error_("ERROR: a table is read outside of its entries at line " + str(line))
         values = read.evaluate_over(context)
         if read is self:
@@ -362,14 +380,14 @@ class Composite(Expr):
         return frozenset().union(*(arg.parameters_read for arg in self.args))
 
     @cached_property
-    def reads_out_of_range(self) -> Expr:
-        return self._reads_out_of_range()
+    def missing_entry_count(self) -> Expr:
+        return self._missing_entry_count()
 
-    def _reads_out_of_range(self) -> Expr:
-        """The reads out of range of the arguments, added up."""
+    def _missing_entry_count(self) -> Expr:
+        """The reads of missing entries of the arguments, added up."""
         return Add(
             [(Number(0, self.table), 1)]
-            + [(arg.reads_out_of_range, 1) for arg in self.args]
+            + [(arg.missing_entry_count, 1) for arg in self.args]
         )
 
     def __reduce__(
@@ -516,13 +534,13 @@ class Indexed(Composite):
             return Operation("==", (self.indexes[0], target.indexes[0]))
         return super()._derivative(target)
 
-    def _reads_out_of_range(self) -> Expr:
+    def _missing_entry_count(self) -> Expr:
         [index] = self.indexes
-        out_of_range = Operation(
+        reads_missing_entry = Operation(
             "or",
             (Operation("<", (index, 0)), Operation(">=", (index, self.base.length))),
         )
-        return super()._reads_out_of_range() + out_of_range
+        return super()._missing_entry_count() + reads_missing_entry
 
     def compute(self, context: Context) -> np.ndarray:
         """The entries of the base at the positions its indexes read: columns for a variable, values for a table."""
@@ -832,12 +850,12 @@ class Range(Composite):
         # a range defines its index, so renaming that index rebuilds the range
         return self.index in names or super().reads_any(names)
 
-    def _reads_out_of_range(self) -> Expr:
-        """The reads out of range of the bounds, and of the condition over every value of the index."""
-        bounds = Add([(bound.reads_out_of_range, 1) for bound in (self.begin, self.end, self.step)])
+    def _missing_entry_count(self) -> Expr:
+        """The reads of missing entries of the bounds, and of the condition over every value of the index."""
+        bounds = Add([(bound.missing_entry_count, 1) for bound in (self.begin, self.end, self.step)])
         if self.condition is None:
             return bounds
-        return bounds + Sum(self.condition.reads_out_of_range, self.unconditioned)
+        return bounds + Sum(self.condition.missing_entry_count, self.unconditioned)
 
     def _replace(self, visit: Callable[[Expr], Expr]) -> Expr:
         condition = None if self.condition is None else visit(self.condition)
@@ -950,8 +968,8 @@ class Sum(Composite):
     def _replace(self, visit: Callable[[Expr], Expr]) -> Expr:
         return Sum(visit(self.body), visit(self.range))
 
-    def _reads_out_of_range(self) -> Expr:
-        return self.range.reads_out_of_range + Sum(self.body.reads_out_of_range, self.range)
+    def _missing_entry_count(self) -> Expr:
+        return self.range.missing_entry_count + Sum(self.body.missing_entry_count, self.range)
 
     def _derivative(self, target: "ParameterSymbol | Indexed") -> Expr:
         self.range.check_does_not_read(target)

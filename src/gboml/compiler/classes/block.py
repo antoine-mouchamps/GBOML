@@ -14,6 +14,7 @@ from .symbolic import (
     Idx,
     Indexed,
     Number,
+    Operation,
     ParameterSymbol,
     Range,
     Sum,
@@ -127,13 +128,13 @@ class Term:
         )
 
     @property
-    def reads_out_of_range(self) -> Expr:
-        """The number of reads out of range in the term, over every position of its ranges."""
+    def missing_entry_count(self) -> Expr:
+        """The number of reads of missing entries in the term, over every position of its ranges."""
         count = Add(
-            [(expression.reads_out_of_range, 1) for expression in (self.coefficient, *self.variables)]
+            [(expression.missing_entry_count, 1) for expression in (self.coefficient, *self.variables)]
         )
         for value_range in reversed(self.ranges):
-            count = value_range.reads_out_of_range + Sum(count, value_range)
+            count = value_range.missing_entry_count + Sum(count, value_range)
         return count
 
     def evaluate_over(self, row_context: Context) -> None:
@@ -169,7 +170,7 @@ class Block:
     and its terms of degree one and two by key, no two of them sharing a key.
     """
 
-    __slots__ = ("constant", "linear", "quadratic")
+    __slots__ = ("constant", "linear", "quadratic", "kept_rows")
 
     def __init__(
         self,
@@ -193,6 +194,10 @@ class Block:
                     stored.pop(term.key, None)
                 else:
                     stored[term.key] = term
+        # the condition, over the rows, that no term reads a table or a variable outside of its entries
+        self.kept_rows = Operation(
+            "==", (Add([(term.missing_entry_count, 1) for term in self.terms]), 0)
+        )
 
     @staticmethod
     def of_constant(expression: Expr) -> "Block":
@@ -209,10 +214,6 @@ class Block:
     @property
     def terms(self) -> list[Term]:
         return [self.constant, *self.linear.values(), *self.quadratic.values()]
-
-    @property
-    def reads_out_of_range(self) -> Expr:
-        return Add([(term.reads_out_of_range, 1) for term in self.terms])
 
     def degree(self) -> int:
         if self.quadratic:
@@ -287,8 +288,8 @@ class Block:
         )
 
     def derivative(self, target: ParameterSymbol | Indexed) -> "Block":
-        """The block whose coefficients are the derivatives of these ones with respect to `target`."""
-        return Block(
+        """The block whose coefficients are the derivatives of these ones with respect to `target`, over the same rows."""
+        derived_block = Block(
             Term((), (), self.constant.coefficient.derivative(target)),
             [
                 Term(term.ranges, term.variables, term.coefficient.derivative(target))
@@ -299,24 +300,26 @@ class Block:
                 for term in self.quadratic.values()
             ],
         )
+        # a term whose derivative is zero is dropped, but the rows its reads dropped stay dropped
+        derived_block.kept_rows = self.kept_rows
+        return derived_block
 
     def evaluate_over(
         self,
         rows: Range,
-        reads_out_of_range: Expr,
         parameter_values: dict,
         cache: dict,
         line: int,
     ) -> tuple[np.ndarray, RowMask]:
         """
-        The values the row index takes, and the rows where `reads_out_of_range`
-        is zero. Every term keeps its evaluation until `assemble` reads it.
+        The values the row index takes, and the rows where `self.kept_rows` holds.
+        Every term keeps its evaluation until `assemble` reads it.
         """
         terms = self.terms
         # checked once here, so that every read of a value in the evaluation trusts it
         check_parameter_values(
             rows.parameters_read.union(
-                reads_out_of_range.parameters_read,
+                self.kept_rows.parameters_read,
                 *(
                     expression.parameters_read
                     for term in terms
@@ -334,7 +337,7 @@ class Block:
             return row_index_values, np.zeros(0, dtype=bool)
 
         context = context.widened(rows, row_index_values, np.ones(nb_rows, dtype=bool))
-        valid = np.broadcast_to(reads_out_of_range.evaluate_over(context) == 0, (nb_rows,))
+        valid = np.broadcast_to(self.kept_rows.evaluate_over(context).astype(bool), (nb_rows,))
         for term in terms:
             term.evaluate_over(context)
         return row_index_values, valid

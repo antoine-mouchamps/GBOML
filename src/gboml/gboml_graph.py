@@ -309,8 +309,6 @@ class GbomlGraph:
             )
         for read in expression.parameters_read:
             self.__check_parameter_has_symbol(read.path)
-        if np.shape(expression.evalf(self.program.parameter_values)) != parameter.shape:
-            error_("ERROR: the expression replacing " + path + " does not have the shape of that parameter")
         replacements = {parameter: expression}
         for factor in self.__factors():
             factor.replace(replacements)
