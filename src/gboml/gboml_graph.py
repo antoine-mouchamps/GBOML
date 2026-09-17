@@ -16,7 +16,9 @@ from .compiler import (
     set_limited_sized_dict,
 )
 from .compiler.classes import Parameter, Expression, Node, Hyperedge, Time, \
-    Program
+    Program, Factorize
+from .compiler.classes.symbolic import Expr, Indexed, Number, ParameterSymbol
+from .compiler.gboml_matrix_generation import get_flat_nodes_edges_ordered
 from .compiler.utils import error_, move_to_directory
 from .solver_api import (
     cplex_solver,
@@ -32,8 +34,10 @@ from .output import generate_json, generate_list_values_tuple
 
 from enum import Enum
 import os
+import re
 from copy import deepcopy
 import numpy as np
+from scipy.sparse import coo_array
 
 
 class VariableType(Enum):
@@ -216,7 +220,7 @@ class GbomlGraph:
 
         """
 
-        return self.timehorizon.get_value()
+        return self.timehorizon.get_expression().get_name()
 
     def build_model(self, nb_processes: int = 1):
         """
@@ -232,11 +236,16 @@ class GbomlGraph:
         program, program_variables_dict, definitions = semantic(program)
         check_program_degrees(program, program_variables_dict, definitions)
         factorize_program(program, program_variables_dict, definitions)
+        self.program = program
+        self.generate_matrices(nb_processes)
+
+    def generate_matrices(self, nb_processes: int = 1):
+        """Evaluates the blocks of the built model with the current parameter values into its matrices."""
+        program = self.program
         if nb_processes > 1:
-            extend_factor_on_multiple_processes(program, definitions,
-                                                nb_processes)
+            extend_factor_on_multiple_processes(program, program.parameter_values, nb_processes)
         else:
-            extend_factor(program, definitions)
+            extend_factor(program, program.parameter_values)
 
         (
             matrix_eq,
@@ -249,9 +258,7 @@ class GbomlGraph:
         vector_c, indep_terms_c, quadratic_objective, alone_term_c = (
             matrix_generation_c_Q(program)
         )
-        program.free_factors_objectives()
 
-        self.program = program
         self.matrix_a_ineq = matrix_ineq
         self.matrix_b_ineq = vector_b_ineq
         self.matrix_a_eq = matrix_eq
@@ -262,6 +269,185 @@ class GbomlGraph:
         self.quadratic_eq = quadratic_eq
         self.quadratic_ineq = quadratic_ineq
         self.quadratic_objective = quadratic_objective
+
+    def parameter(self, path: str) -> ParameterSymbol:
+        """The symbol of a parameter of the built model, such as "NODE.name", to build the expressions `replace_parameter` takes."""
+        self.__check_parameter_has_symbol(path)
+        return ParameterSymbol(
+            path, np.shape(self.program.parameter_values[path]), self.program.expression_table
+        )
+
+    def add_parameter(self, path: str, value: float | list[float]) -> ParameterSymbol:
+        """Gives a value to a new parameter of a node or a hyperedge of the built model, and returns its symbol."""
+        self.__check_model_is_built()
+        element_path, _, name = path.rpartition(".")
+        declared_parameters = self.__declared_parameters(element_path)
+        if declared_parameters is None:
+            error_("ERROR: the model holds no node or hyperedge named " + element_path)
+        if name in declared_parameters or path in self.program.parameter_values:
+            error_("ERROR: the parameter " + path + " already exists")
+        self.program.parameter_values[path] = self.__as_parameter_value(value)
+        return self.parameter(path)
+
+    def set_parameter_value(self, path: str, value: float | list[float]) -> None:
+        """Changes the value of a parameter of the built model, which keeps its shape."""
+        self.__check_parameter_has_symbol(path)
+        self.__check_not_fixed_at_compilation(path)
+        value = self.__as_parameter_value(value)
+        if np.shape(value) != np.shape(self.program.parameter_values[path]):
+            error_("ERROR: the new value of " + path + " does not have the shape of the current one")
+        self.program.parameter_values[path] = value
+
+    def replace_parameter(self, path: str, expression: Expr) -> None:
+        """Replaces every read of a parameter of the built model by an expression of its parameters, which may read that parameter too."""
+        parameter = self.parameter(path)
+        self.__check_not_fixed_at_compilation(path)
+        if not isinstance(expression, Expr):
+            error_(
+                "ERROR: a parameter is replaced by an expression built from GbomlGraph.parameter, "
+                "and its value is changed with GbomlGraph.set_parameter_value"
+            )
+        for read in expression.parameters_read:
+            self.__check_parameter_has_symbol(read.path)
+        if np.shape(expression.evalf(self.program.parameter_values)) != parameter.shape:
+            error_("ERROR: the expression replacing " + path + " does not have the shape of that parameter")
+        replacements = {parameter: expression}
+        for factor in self.__factors():
+            factor.replace(replacements)
+
+    def derivative(self, path: str) -> dict[str, object]:
+        """
+        The derivatives of the arrays the solvers receive, with respect to a parameter "ELEMENT.name" or
+        to one entry "ELEMENT.name[k]" of a table, keyed like the attributes of the graph; the graph is left unchanged.
+        """
+        target = self.__derivative_target(path)
+        program = self.program
+        factors = self.__factors()
+        original_blocks = [factor.block for factor in factors]
+        elements = get_flat_nodes_edges_ordered(program.get_nodes(), program.get_links())
+        # matrix generation writes the rows of the model on the elements, which the output of a solution reads
+        layouts = [self.__read_layout(element) for element in elements]
+        derived_blocks = [factor.derivative(target) for factor in factors]
+        for factor, block in zip(factors, derived_blocks):
+            factor.block = block
+        extend_factor(program, program.parameter_values)
+        matrix_a_eq, matrix_b_eq, quadratic_eq, matrix_a_ineq, matrix_b_ineq, quadratic_ineq = (
+            matrix_generation_a_b_Q(program)
+        )
+        vector_c, objective_offset, quadratic_objective = self.__objective_derivative(program)
+        for factor, block in zip(factors, original_blocks):
+            factor.block = block
+        for element, layout in zip(elements, layouts):
+            element.__dict__.update(layout)
+        return {
+            "matrix_a_eq": matrix_a_eq,
+            "matrix_b_eq": matrix_b_eq,
+            "quadratic_eq": quadratic_eq,
+            "matrix_a_ineq": matrix_a_ineq,
+            "matrix_b_ineq": matrix_b_ineq,
+            "quadratic_ineq": quadratic_ineq,
+            "vector_c": vector_c,
+            "objective_offset": objective_offset,
+            "quadratic_objective": quadratic_objective,
+        }
+
+    @staticmethod
+    def __read_layout(element) -> dict[str, object]:
+        """The rows of the constraints and objectives that matrix generation stored on the element."""
+        names = ("constraints_data", "nb_eq_constraints", "nb_ineq_constraints", "objectives_data", "nb_objective_matrix")
+        layout = {name: getattr(element, name) for name in names if hasattr(element, name)}
+        layout["constraints_data"] = dict(layout["constraints_data"])
+        return layout
+
+    @staticmethod
+    def __objective_derivative(program: Program) -> tuple:
+        """The derived objectives summed as the solvers receive them, since matrix generation refuses objectives without variables."""
+        objective_factors = [
+            factor
+            for node in get_flat_nodes_edges_ordered(program.get_nodes(), [], without_hyperedges=True)
+            for factor in node.get_objective_factors()
+        ]
+        if any(factor.has_variables() for factor in objective_factors):
+            vector_c, indep_terms_c, quadratic_objective, alone_term_c = matrix_generation_c_Q(program)
+            return np.asarray(vector_c.sum(axis=0), dtype=float).reshape(-1), float(indep_terms_c.sum()) + alone_term_c, quadratic_objective
+        nb_variables = program.get_nb_var_index()
+        objective_offset = sum(
+            (-1 if factor.extension_type == "max" else 1) * float(factor.independent_terms.sum())
+            for factor in objective_factors
+        )
+        empty_quadratic = coo_array(([], ([], [], [])), shape=(0, nb_variables, nb_variables))
+        return np.zeros(nb_variables), objective_offset, empty_quadratic
+
+    def __derivative_target(self, path: str) -> ParameterSymbol | Indexed:
+        """The parameter, or the entry of a table, that `path` names."""
+        entry_match = re.fullmatch(r"(.+)\[(\d+)\]", path)
+        parameter_path = path if entry_match is None else entry_match.group(1)
+        parameter = self.parameter(parameter_path)
+        self.__check_not_fixed_at_compilation(parameter_path)
+        if entry_match is None:
+            if parameter.ndim > 0:
+                error_(
+                    "ERROR: the derivative is taken with respect to one entry of the table "
+                    + path + ", written as " + path + "[k]"
+                )
+            return parameter
+        entry = int(entry_match.group(2))
+        if parameter.ndim == 0 or entry >= parameter.length:
+            error_("ERROR: " + path + " is not an entry of a table")
+        return Indexed(parameter, (Number(entry, self.program.expression_table),))
+
+    def __factors(self) -> list[Factorize]:
+        """The constraint and objective factors of every element of the built model."""
+        factors = []
+        for element in get_flat_nodes_edges_ordered(self.program.get_nodes(), self.program.get_links()):
+            factors.extend(element.get_constraint_factors())
+            if isinstance(element, Node):
+                factors.extend(element.get_objective_factors())
+        return factors
+
+    def __check_model_is_built(self) -> None:
+        if self.program is None:
+            error_("ERROR: the parameters of a model are reached once build_model has been called")
+
+    def __check_not_fixed_at_compilation(self, path: str) -> None:
+        if path in self.program.parameters_fixed_at_compilation:
+            error_(
+                "ERROR: the parameter " + path + " fixes the size of a variable or the exponent of a power "
+                "over variables, which were computed at compilation"
+            )
+
+    def __check_parameter_has_symbol(self, path: str) -> None:
+        """Refuses a path naming no parameter, or a parameter substituted by its definition at compilation."""
+        self.__check_model_is_built()
+        if path in self.program.parameter_values:
+            return
+        element_path, _, name = path.rpartition(".")
+        if name in (self.__declared_parameters(element_path) or {}):
+            error_(
+                "ERROR: the parameter " + path + " is defined from other parameters, so it was substituted by "
+                "its definition at compilation; the parameters it reads can be replaced instead"
+            )
+        error_("ERROR: the model holds no parameter named " + path)
+
+    def __declared_parameters(self, element_path: str) -> dict | None:
+        """The parameters declared in the element at `element_path`, or None when the model holds no such element."""
+        if element_path == "global":
+            return self.program.get_global_parameters()
+        element, candidates = None, self.program.get_nodes() + self.program.get_links()
+        for name in element_path.split("."):
+            element = next((candidate for candidate in candidates if candidate.get_name() == name), None)
+            if element is None:
+                return None
+            candidates = element.get_sub_nodes() + element.get_sub_hyperedges() if isinstance(element, Node) else []
+        return element.get_parameter_dict()
+
+    @staticmethod
+    def __as_parameter_value(value: float | list[float]) -> float | np.ndarray:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, list):
+            return np.array(value, dtype=float)
+        error_("ERROR: a parameter value is a number or a list of numbers, not " + str(type(value)))
 
     def __solve(self, solver_function, solver_supports_quadratic=False):
         """

@@ -7,6 +7,8 @@ from .parent import Symbol
 from gboml.compiler.utils import error_
 import copy
 
+import numpy as np
+
 
 class Identifier(Symbol):
     """
@@ -79,17 +81,12 @@ class Identifier(Symbol):
 
         return self.option
 
-    def set_size(self, dictionary):
+    def set_size(self, size):
 
-        if self.expression is None:
-
-            size = 1
-        else:
-            size = self.expression.evaluate_expression(dictionary)
-        if size <= 0:
+        if np.ndim(size) > 0 or not float(size).is_integer() or size <= 0:
             error_('ERROR : wrong size for variable : '
                    + str(self) + " at line : " + str(self.get_line()))
-        self.size = size
+        self.size = int(size)
 
     def get_size(self):
 
@@ -127,41 +124,6 @@ class Identifier(Symbol):
 
         return self.index 
 
-    def to_python_ast(self):
-        import ast
-        type_id = self.get_type()
-        identifier_name = self.get_name()
-        node_name = self.get_node_name()
-
-        if node_name != "":
-            identifier_name = node_name+"."+identifier_name
-
-        output = None
-        if type_id == "basic":
-            output = ast.Name(id=identifier_name, ctx=ast.Load())
-        elif type_id == "assign":
-            output = ast.Call(func=ast.Name(id="__f_index__", ctx=ast.Load()),
-                              args=[
-                                  self.expression.to_python_ast(),
-                                  ast.Name(id='extension_range', ctx=ast.Load()),
-                                  ast.Name(id=identifier_name, ctx=ast.Load())
-                              ],
-                              keywords=[])
-
-            """
-            output = ast.Subscript(value=ast.Name(id=identifier_name, ctx=ast.Load()),
-                                   slice=ast.Index(
-                                       value=ast.Call(
-                                            func=ast.Name(id='__f_index__', ctx=ast.Load()),
-                                            args=[
-                                                self.expression.to_python_ast(),
-                                                ast.Name(id='extension_range', ctx=ast.Load()),
-                                                ast.Call(
-                                                    func=ast.Name(id='len', ctx=ast.Load()),
-                                                    args=[
-                                                        ast.Name(id=identifier_name, ctx=ast.Load())],
-                                                    keywords=[])],
-                                            keywords=[]),
-                                       ctx=ast.Load()), ctx=ast.Load())
-            """
-        return output
+    def to_symbolic(self, scope):
+        """The symbolic expression this name, which holds no variable, stands for."""
+        return scope.resolve_constant(self)

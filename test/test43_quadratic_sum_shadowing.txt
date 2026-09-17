@@ -12,8 +12,8 @@ lo_x: x[k] >= 1 for k in [0:1];
 up_x: x[k] <= 3 for k in [0:1];
 lo_z: z[k] >= 0 for k in [0:1];
 up_z: z[k] <= 99 for k in [0:1];
-// the index of the sum shadows the one of the constraint, the z[k] of the
-// right hand side must still be expanded over the index of the constraint
+// the index of the sum has the name of the index of the constraint, which
+// the compiler refuses
 squares: sum(x[k]*x[k] for k in [0:1]) == z[k] for k in [0:1];
 #OBJECTIVES
 min cost: c[k]*z[k] for k in [0:1];

@@ -23,6 +23,8 @@ from .classes import (
     Condition,
 )
 from .classes.error import RedefinitionError
+from .classes.expression import Scope
+from .classes.symbolic import Idx
 
 import numpy as np  # type: ignore
 from .utils import error_, get_branch_in_nested_dict, \
@@ -33,7 +35,9 @@ import time as t
 def semantic(program: Program) -> tuple:
     # CHECKS to do -> Check if there are no constraints
     time = program.get_time()
-    check_time_horizon(time)
+    check_time_horizon(time, Scope(program, {}, {}))
+    # the sizes of the variables are computed from it
+    program.parameters_fixed_at_compilation.add("T")
     time_value = time.get_value()
 
     node_list = program.get_nodes()
@@ -46,8 +50,8 @@ def semantic(program: Program) -> tuple:
 
     definitions["T"] = time_parameter
     global_param = program.get_dict_global_parameters()
-    parameter_evaluation(global_param, definitions)
     definitions["global"] = global_param
+    parameter_evaluation(program, "global", definitions)
     program_variables_dict = {}
 
     global_index = 0
@@ -58,11 +62,11 @@ def semantic(program: Program) -> tuple:
     check_objective_exists(node_list)
 
     global_index = \
-        check_and_extend_parameters_variables_in_nodes(node_list,
+        check_and_extend_parameters_variables_in_nodes(program, node_list,
                                                        program_variables_dict,
                                                        definitions, [],
                                                        global_index)
-    check_and_extend_parameters_in_edges(link_list, definitions, [])
+    check_and_extend_parameters_in_edges(program, link_list, definitions, [])
 
     for node in node_list:
         node_name = node.get_name()
@@ -139,7 +143,7 @@ def apply_changes_parameters(dictionary_of_parameters, parameters_changes):
             dictionary_of_parameters[parameter_name] = new_parameter
 
 
-def check_and_extend_parameters_variables_in_nodes(nodes_list: list,
+def check_and_extend_parameters_variables_in_nodes(program: Program, nodes_list: list,
                                                    program_variables_dict: dict,
                                                    definitions: dict,
                                                    depth_list: list,
@@ -159,9 +163,9 @@ def check_and_extend_parameters_variables_in_nodes(nodes_list: list,
             get_branch_in_nested_dict(definitions, depth_list, not_lower=True)
         flat_branch_dictionary["global"] = definitions["global"]
         flat_branch_dictionary["T"] = definitions["T"]
-        parameter_evaluation(node_parameters, flat_branch_dictionary)
-
         flat_branch_dictionary[node_name] = node_parameters
+        parameter_evaluation(program, node_name, flat_branch_dictionary)
+
         node.set_parameter_dict(node_parameters)
         _, definitions = \
             update_branch_in_nested_dict(definitions, depth_list.copy(),
@@ -174,17 +178,20 @@ def check_and_extend_parameters_variables_in_nodes(nodes_list: list,
         depth_list.append(node_name)
         global_index = \
             check_and_extend_parameters_variables_in_nodes(
+                program,
                 node.get_sub_nodes(),
                 program_variables_dict,
                 definitions, depth_list, global_index)
-        check_and_extend_parameters_in_edges(node.get_sub_hyperedges(),
+        check_and_extend_parameters_in_edges(program, node.get_sub_hyperedges(),
                                              definitions, depth_list)
         _, nested_nodes_variables = get_layer_in_nested_dict(
             program_variables_dict, depth_list, only_dict=True)
         depth_list.remove(node_name)
         add_node_in_variable_index(node)
-        global_index = set_size_variables(node_variables,
-                                          flat_branch_dictionary,
+        size_scope = Scope(program, {}, flat_branch_dictionary)
+        global_index = set_size_variables(program,
+                                          node_variables,
+                                          size_scope,
                                           global_index,
                                           nested_nodes_variables)
         check_names_repetitions(node.get_constraints())
@@ -208,7 +215,7 @@ def add_node_in_variable_index(node):
                 add_node_names_expression(child_expression, node, [])
 
 
-def check_and_extend_parameters_in_edges(edge_list: list,
+def check_and_extend_parameters_in_edges(program: Program, edge_list: list,
                                          definitions: dict,
                                          depth_list: list):
     for edge in edge_list:
@@ -224,7 +231,8 @@ def check_and_extend_parameters_in_edges(edge_list: list,
                                                               not_lower=True)
         flat_branch_dictionary["global"] = definitions["global"]
         flat_branch_dictionary["T"] = definitions["T"]
-        parameter_evaluation(edge_parameters, flat_branch_dictionary)
+        flat_branch_dictionary[edge_name] = edge_parameters
+        parameter_evaluation(program, edge_name, flat_branch_dictionary)
         edge.set_parameter_dict(edge_parameters)
         _, definitions = update_branch_in_nested_dict(definitions,
                                                       depth_list.copy(),
@@ -255,11 +263,20 @@ def check_program_degrees(program, variables, definitions):
         {"T": definitions["T"], "global": definitions["global"]}
     nodes = program.get_nodes()
     hyperedges = program.get_links()
+
+    def check_one_node(node, node_variables, node_definitions):
+        scope = Scope(program, node_variables, node_definitions)
+        check_expressions_dependency(program, node, node_variables, scope)
+
+    def check_one_hyperedge(edge, edge_variables, edge_definitions):
+        scope = Scope(program, edge_variables, edge_definitions)
+        check_expressions_dependency_link(program, edge, edge_variables, scope)
+
     recursive_application_on_nodes_hyperedges(nodes, hyperedges, variables,
                                               definitions,
                                               definition_accumulator_dict,
-                                              check_expressions_dependency,
-                                              check_expressions_dependency_link)
+                                              check_one_node,
+                                              check_one_hyperedge)
 
 
 def recursive_application_on_nodes_hyperedges(nodes,
@@ -294,14 +311,21 @@ def factorize_program(program, variables, definitions):
         {"T": definitions["T"], "global": definitions["global"]}
     nodes = program.get_nodes()
     hyperedges = program.get_links()
+
+    def factorize_one_node(node, node_variables, node_definitions):
+        factorize_node(node, Scope(program, node_variables, node_definitions))
+
+    def factorize_one_hyperedge(edge, edge_variables, edge_definitions):
+        factorize_hyperedge(edge, Scope(program, edge_variables, edge_definitions))
+
     recursive_application_on_nodes_hyperedges(nodes, hyperedges,
                                               variables, definitions,
                                               definition_accumulator_dict,
-                                              factorize_node,
-                                              factorize_hyperedge)
+                                              factorize_one_node,
+                                              factorize_one_hyperedge)
 
 
-def factorize_node(node, variables, definitions):
+def factorize_node(node, scope):
     name = node.get_name()
     start_time = t.time()
     constraints = node.get_constraints()
@@ -309,7 +333,7 @@ def factorize_node(node, variables, definitions):
     constraint_factors = []
     for constraint in constraints:
         factor = Factorize(constraint)
-        factor.factorize_constraint(variables, definitions)
+        factor.factorize_constraint(scope)
         constraint_factors.append(factor)
 
     node.set_constraint_factors(constraint_factors)
@@ -317,7 +341,7 @@ def factorize_node(node, variables, definitions):
     objective_factors = []
     for objective in objectives:
         factor = Factorize(objective)
-        factor.factorize_objective(variables, definitions)
+        factor.factorize_objective(scope)
         objective_factors.append(factor)
     node.set_objective_factors(objective_factors)
 
@@ -325,14 +349,14 @@ def factorize_node(node, variables, definitions):
           % (name, t.time() - start_time))
 
 
-def factorize_hyperedge(edge, variables, definitions):
+def factorize_hyperedge(edge, scope):
     name = edge.get_name()
     constraints = edge.get_constraints()
     constraint_factors = []
 
     for constraint in constraints:
         factor = Factorize(constraint)
-        factor.factorize_constraint(variables, definitions)
+        factor.factorize_constraint(scope)
         constraint_factors.append(factor)
     edge.set_constraint_factors(constraint_factors)
     start_time = t.time()
@@ -340,9 +364,9 @@ def factorize_hyperedge(edge, variables, definitions):
           % (name, t.time() - start_time))
 
 
-def check_expressions_dependency_link(link: Hyperedge,
+def check_expressions_dependency_link(program: Program, link: Hyperedge,
                                       variables: dict,
-                                      parameters_obj: dict):
+                                      scope: Scope):
     constraints = link.get_constraints()
     for cons in constraints:
         rhs = cons.get_rhs()
@@ -354,18 +378,20 @@ def check_expressions_dependency_link(link: Hyperedge,
         if var_in_right is False and var_in_left is False:
             error_("No variable in constraint at line " + str(cons.get_line()))
 
-        expression_degree(rhs, variables, parameters_obj)
-        expression_degree(lhs, variables, parameters_obj)
+        rows_scope = scope.with_bound_index(cons.get_index_var(), Idx("t", scope.table))
+        expression_degree(program, rhs, variables, rows_scope)
+        expression_degree(program, lhs, variables, rows_scope)
 
 
-def check_expressions_dependency(node: Node,
+def check_expressions_dependency(program: Program, node: Node,
                                  variables: dict,
-                                 parameters_obj: dict):
+                                 scope: Scope):
     """
     check_expressions_dependancy function : checks the expressions inside a node
-    INPUT:  node -> Node object
+    INPUT:  program -> Program object whose parameters fixed at compilation are recorded
+            node -> Node object
             variables -> dictionary of <name,identifier> objects
-            parameters -> dictionary of <name,array> objects
+            scope -> Scope object the names are looked up in
     OUTPUT: None
     """
     constraints = node.get_constraints()
@@ -379,12 +405,14 @@ def check_expressions_dependency(node: Node,
         if var_in_right is False and var_in_left is False:
             error_("No variable in constraint at line " + str(cons.get_line()))
 
-        expression_degree(rhs, variables, parameters_obj)
-        expression_degree(lhs, variables, parameters_obj)
+        rows_scope = scope.with_bound_index(cons.get_index_var(), Idx("t", scope.table))
+        expression_degree(program, rhs, variables, rows_scope)
+        expression_degree(program, lhs, variables, rows_scope)
 
     objectives = node.get_objectives()
     for obj in objectives:
-        expression_degree(obj.get_expression(), variables, parameters_obj)
+        objective_scope = scope.with_bound_index(obj.get_index_var(), Idx("t", scope.table))
+        expression_degree(program, obj.get_expression(), variables, objective_scope)
 
 
 def degree_error(e_type: str, degree: int, children: list):
@@ -414,7 +442,7 @@ def degree_error(e_type: str, degree: int, children: list):
     )
 
 
-def expression_degree(expression: Expression, variables: dict, parameters: dict) -> int:
+def expression_degree(program: Program, expression: Expression, variables: dict, scope: Scope) -> int:
     """
     expression_degree function : returns the degree of an expression with
                                  respect to the variables it involves, zero for
@@ -425,9 +453,10 @@ def expression_degree(expression: Expression, variables: dict, parameters: dict)
                                  under a modulo are all reported as errors,
                                  none of them being expressible as a quadratic
                                  problem.
-    INPUT:  expression -> expression object to check
+    INPUT:  program -> Program object whose parameters fixed at compilation are recorded
+            expression -> expression object to check
             variables -> dictionary of <name,identifier> objects
-            parameters -> dictionary of <name,array> objects
+            scope -> Scope object the names and the bound letters are looked up in
     OUTPUT: int -> degree of the expression, between zero and 2
     """
 
@@ -452,7 +481,7 @@ def expression_degree(expression: Expression, variables: dict, parameters: dict)
                    "must have one child, got "
                    + str(nb_child) +
                    " check internal parser")
-        degree = expression_degree(children[0], variables, parameters)
+        degree = expression_degree(program, children[0], variables, scope)
     elif e_type == 'sum':
 
         if nb_child != 1:
@@ -460,13 +489,12 @@ def expression_degree(expression: Expression, variables: dict, parameters: dict)
                    + str(nb_child) + " check internal parser")
         time_int = expression.get_time_interval()
         time_var = time_int.get_index_name()
-        if time_var in parameters:
-            error_("Redefinition of " + str(time_int) + " at line : "
+        if time_var in scope.definitions or time_var in scope.bound_indexes:
+            error_("ERROR: index " + time_var + " for loop already defined. Redefinition at line "
                    + str(expression.get_line()))
-        parameters[time_var] = None
+        body_scope = scope.with_bound_index(time_var, Idx(("sum", time_var), scope.table))
 
-        degree = expression_degree(children[0], variables, parameters)
-        parameters.pop(time_var)
+        degree = expression_degree(program, children[0], variables, body_scope)
     else:
 
         if nb_child != 2:
@@ -474,8 +502,8 @@ def expression_degree(expression: Expression, variables: dict, parameters: dict)
                    "must have two children, got "
                    + str(nb_child) +
                    " check internal parser")
-        degree1 = expression_degree(children[0], variables, parameters)
-        degree2 = expression_degree(children[1], variables, parameters)
+        degree1 = expression_degree(program, children[0], variables, scope)
+        degree2 = expression_degree(program, children[1], variables, scope)
 
         if e_type == "+" or e_type == "-":
             degree = max(degree1, degree2)
@@ -498,8 +526,14 @@ def expression_degree(expression: Expression, variables: dict, parameters: dict)
                 )
             degree = 0
             if degree1 > 0:
-                exponent = children[1].evaluate_as_constant_integer(parameters)
-                if exponent is None or exponent < 0:
+                symbolic_exponent = children[1].to_symbolic(scope)
+                exponent = None
+                if not symbolic_exponent.free_indexes:
+                    exponent = symbolic_exponent.evalf(program.parameter_values, expression.get_line())
+                    program.parameters_fixed_at_compilation.update(
+                        parameter.path for parameter in symbolic_exponent.parameters_read)
+                if exponent is None or np.ndim(exponent) > 0 or not float(exponent).is_integer() \
+                        or exponent < 0:
                     error_(
                         "The exponent of an expression containing "
                         "variables must be a non negative constant integer "
@@ -508,7 +542,7 @@ def expression_degree(expression: Expression, variables: dict, parameters: dict)
                         + "\nNamely Expression : "
                         + str(children[1])
                     )
-                degree = degree1 * exponent
+                degree = degree1 * int(exponent)
                 if degree > 2:
                     degree_error(e_type, degree, children)
         elif e_type == "mod":
@@ -525,6 +559,8 @@ def expression_degree(expression: Expression, variables: dict, parameters: dict)
                 + "' check internal parser"
             )
 
+    # kept so that the factorization knows which subtrees hold no variable
+    expression.degree = degree
     return degree
 
 
@@ -1078,7 +1114,7 @@ def add_node_names_expression(expr: Expression, node,
                 add_node_names_condition(condition, node, reserved_sum)
 
 
-def check_time_horizon(time_horizon: Time):
+def check_time_horizon(time_horizon: Time, scope: Scope):
     variable_name = time_horizon.get_name()
     line = time_horizon.get_line()
     if variable_name != "T":
@@ -1086,7 +1122,7 @@ def check_time_horizon(time_horizon: Time):
             line) + ": Use \"T\"" + " as a symbol for the time horizon. \""
                + str(variable_name) + "\" is not allowed")
 
-    time_value = time_horizon.get_value()
+    time_value = time_horizon.get_expression().to_symbolic(scope).evalf(scope.parameter_values, line)
     if type(time_value) == float and time_value.is_integer() is False:
 
         time_value = int(round(time_value))
@@ -1493,7 +1529,7 @@ def check_variables_type_sizes(dictionary_var: dict, dictionary_param: dict):
                     + str(var.get_line()))
 
 
-def set_size_variables(dictionary_var: dict, dictionary_param: dict, index: int,
+def set_size_variables(program: Program, dictionary_var: dict, scope: Scope, index: int,
                        nested_nodes_variables) -> int:
     """
     Initializes the index of variable object inside a dictionary
@@ -1502,7 +1538,13 @@ def set_size_variables(dictionary_var: dict, dictionary_param: dict, index: int,
     for k in dictionary_var.keys():
         var = dictionary_var[k]
         identifier = var.get_identifier()
-        identifier.set_size(dictionary_param)
+        size = 1
+        if identifier.get_expression() is not None:
+            symbolic_size = identifier.get_expression().to_symbolic(scope)
+            size = symbolic_size.evalf(program.parameter_values, identifier.get_line())
+            program.parameters_fixed_at_compilation.update(
+                parameter.path for parameter in symbolic_size.parameters_read)
+        identifier.set_size(size)
         child_assignment_identifier = var.get_child_assignment()
         if child_assignment_identifier:
             child_node_name = child_assignment_identifier.get_node_name()
@@ -1511,8 +1553,10 @@ def set_size_variables(dictionary_var: dict, dictionary_param: dict, index: int,
             if child_expression is None:
                 child_declared_size = 1
             else:
-                child_declared_size = child_expression.evaluate_expression(
-                    dictionary_param)
+                symbolic_size = child_expression.to_symbolic(scope)
+                child_declared_size = symbolic_size.evalf(program.parameter_values, identifier.get_line())
+                program.parameters_fixed_at_compilation.update(
+                    parameter.path for parameter in symbolic_size.parameters_read)
             if child_assignment_identifier.get_type() != identifier.get_type():
                 error_(
                     "ERROR: assigning variables of "
@@ -2015,75 +2059,14 @@ def predicate_variables_in_expression(expression: Expression,
     return is_variable
 
 
-def parameter_evaluation(parameter_dict: dict, definitions: dict):
-    """
-    parameter_evaluation function : evaluates a list of parameter objects
-    INPUT:  n_parameters -> list of parameters objects
-            definitions -> dictionary of definitions <name,array>
-    OUTPUT: definitions -> dictionary of definitions <name,array>
-    """
-    input_definition = definitions.copy()
-    for parameter_name in parameter_dict.keys():
-        parameter = parameter_dict[parameter_name]
-        if parameter.read_from_file:
-            input_definition[parameter_name] = parameter
-            continue
-        e = parameter.get_expression()
-        if e is not None:
+def parameter_evaluation(program: Program, element_name: str, definitions: dict):
+    """Gives every parameter of the element the value its definition evaluates to."""
+    scope = Scope(program, {}, definitions)
+    for name, parameter in definitions[element_name].items():
+        line = parameter.get_line()
+        value = scope.resolve_parameter(element_name, name, line).evalf(scope.parameter_values, line)
+        parameter.set_value(np.atleast_1d(value).tolist())
 
-            value = e.evaluate_expression(input_definition)
-            if not isinstance(value, list):
-                value = [value]
-        else:
-            value = evaluate_table(parameter.get_vector(), input_definition)
-
-        parameter.set_value(value)
-        input_definition[parameter_name] = parameter
-
-
-def evaluate_table(list_values: list, definitions: dict) -> list:
-    """
-    evaluate_table function : evaluates a list of expression objects
-    INPUT:  list_values -> list of expression objects
-            definitions -> dictionary of definitions <name,value>
-    OUTPUT: list <float>
-    """
-
-    all_values: list = []
-    for value in list_values:
-
-        value_i = value.get_name()
-        if type(value_i) == Identifier:
-
-            type_val = value_i.get_type()
-            id_name = value_i.get_name()
-            if not (id_name in definitions):
-                error_('Undefined parameter : ' + str(value_i))
-            values = definitions[id_name]
-            if type_val == "basic" and len(values) == 1:
-
-                value_i = values[0]
-            elif type_val == "basic" and len(values) > 1:
-
-                error_('Parameter not properly defined : ' + str(value_i))
-            elif type_val == "assign":
-
-                inner_expr = value_i.get_expression()
-                index = inner_expr.evaluate_expression(definitions)
-                if type(index) == float:
-
-                    if index.is_integer() is False:
-                        error_("Error: an index is a float: " + str(value_i))
-                    index = int(round(index))
-
-                if index < 0 or len(values) <= index:
-                    error_('Parameter does not exit at this index : ' + str(
-                        value_i))
-                value_i = values[index]
-        elif type(value) == Expression:
-            value_i = value.evaluate_expression(definitions)
-        all_values.append(value_i)
-    return all_values
 
 #
 # END Expression FUNCTIONS

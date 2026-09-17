@@ -5,6 +5,7 @@
 
 from .parent import Type
 from .expression import Expression
+from .symbolic import Operation
 
 
 class Condition(Type):
@@ -25,7 +26,6 @@ class Condition(Type):
         Type.__init__(self, type_id, line)
         self.type = type_id
         self.children = children
-        self.python_ast = None
 
     def __str__(self) -> str:
     
@@ -46,45 +46,6 @@ class Condition(Type):
 
         return any(child.depends_on_index(names) for child in self.children)
 
-    def check(self, definitions: dict) -> bool:
-    
-        predicate = False
-        if type(self.children[0]) == Condition:
-
-            predicate_0 = self.children[0].check(definitions)
-            predicate_1 = False
-            if len(self.children) == 2:
-
-                predicate_1 = self.children[1].check(definitions)
-            if self.type == 'and':
-
-                predicate = (predicate_0 and predicate_1)
-            elif self.type == 'or':
-
-                predicate = (predicate_0 or predicate_1)
-            elif self.type == "not":
-
-                predicate = (not predicate_0)
-                
-        elif type(self.children[0]) == Expression:
-            value0 = self.children[0].evaluate_expression(definitions)
-            value1 = self.children[1].evaluate_expression(definitions)
-
-            if self.type == "==":
-                predicate = (value0 == value1)
-            elif self.type == "<=":
-                predicate = (value0 <= value1)
-            elif self.type == ">=":
-                predicate = (value0 >= value1)
-            elif self.type == ">":
-                predicate = (value0 > value1)
-            elif self.type == "<":
-                predicate = (value0 < value1)
-            elif self.type == "!=":
-                predicate = (value0 != value1)
-
-        return predicate
-
     def rename_inside_expressions(self, new_name, old_name):
         children = self.children
         for child in children:
@@ -93,60 +54,8 @@ class Condition(Type):
             elif isinstance(child, Condition):
                 child.rename_inside_expressions(new_name, old_name)
 
-    def to_python_ast(self):
-        import ast
-
-        condition_type = self.get_type()
-        children = self.children
-        ast_form = None
-        if condition_type == "and":
-            ast_form = ast.BinOp(left=children[0].to_python_ast(),
-                                 op=ast.BitAnd(),
-                                 right=children[1].to_python_ast())
-        elif condition_type == "or":
-            ast_form = ast.BinOp(left=children[0].to_python_ast(),
-                                 op=ast.BitOr(),
-                                 right=children[1].to_python_ast())
-        elif condition_type == "not":
-            ast_form = ast.UnaryOp(op=ast.Not(),
-                                   operand=children[0].to_python_ast())
-        elif condition_type == "==":
-            ast_form = ast.Compare(left=children[0].to_python_ast(),
-                                   ops=[ast.Eq()],
-                                   comparators=[children[1].to_python_ast()]
-                                   )
-        elif condition_type == "<=":
-            ast_form = ast.Compare(left=children[0].to_python_ast(),
-                                   ops=[ast.LtE()],
-                                   comparators=[children[1].to_python_ast()]
-                                   )
-        elif condition_type == ">=":
-            ast_form = ast.Compare(left=children[0].to_python_ast(),
-                                   ops=[ast.GtE()],
-                                   comparators=[children[1].to_python_ast()]
-                                   )
-        elif condition_type == "<":
-            ast_form = ast.Compare(left=children[0].to_python_ast(),
-                                   ops=[ast.Lt()],
-                                   comparators=[children[1].to_python_ast()]
-                                   )
-        elif condition_type == ">":
-            ast_form = ast.Compare(left=children[0].to_python_ast(),
-                                   ops=[ast.Gt()],
-                                   comparators=[children[1].to_python_ast()]
-                                   )
-        elif condition_type == "!=":
-            ast_form = ast.Compare(left=children[0].to_python_ast(),
-                                   ops=[ast.NotEq()],
-                                   comparators=[children[1].to_python_ast()]
-                                   )
-        return ast_form
-
-    def turn_to_python_expression(self):
-        import ast
-        condition_ast = self.to_python_ast()
-        expr_ast = ast.Expression(condition_ast)
-        expr_ast = ast.fix_missing_locations(expr_ast)
-        compiled_expr = compile(expr_ast, "", mode="eval")
-        self.python_ast = compiled_expr
-        return compiled_expr
+    def to_symbolic(self, scope):
+        """This condition as a symbolic expression."""
+        return Operation(
+            self.type, tuple(child.to_symbolic(scope) for child in self.children)
+        )

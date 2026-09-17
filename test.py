@@ -944,26 +944,16 @@ class CompilerTests(unittest.TestCase):
     def test_quadratic_sum_shadowing(self):
         """ test_quadratic_sum_shadowing
 
-        Tests a sum whose index shadows the index of the constraint, the
-        expressions outside of the sum having to keep being expanded over the
-        index of the constraint
+        Tests that a sum whose index has the name of the index of the
+        constraint is refused
 
         """
         process = subprocess.run(
-            ['gboml', 'test/test43_quadratic_sum_shadowing.txt', "--gurobi",
-             "--json", "--output", "test/test43_quadratic_sum_shadowing"],
+            ['gboml', 'test/test43_quadratic_sum_shadowing.txt'],
             stdout=subprocess.PIPE,
             universal_newlines=True)
-        return_code = process.returncode
-        self.assertEqual(return_code, 0)
-
-        with open("test/test43_quadratic_sum_shadowing.json", 'r') as j:
-            contents = json.loads(j.read())
-            solution = contents["solution"]
-            # x is minimised to one, so both z equal x[0]**2 + x[1]**2 == 2
-            for z_i in solution["elements"]["A"]["variables"]["z"]["values"]:
-                self.assertAlmostEqual(z_i, 2.0, places=4)
-            self.assertAlmostEqual(solution["objective"], 60.0, places=4)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("index k for loop already defined", process.stdout)
 
     def test_quadratic_degree_three(self):
         """ test_quadratic_degree_three

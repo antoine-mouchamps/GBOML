@@ -81,15 +81,14 @@ def compile_gboml(input_file: str, log: bool = False,
     factorize_program(program, program_variables_dict, definitions)
 
     if nb_processes > 1:
-        extend_factor_on_multiple_processes(program, definitions, nb_processes)
+        extend_factor_on_multiple_processes(program, program.parameter_values, nb_processes)
     else:
-        extend_factor(program, definitions)
+        extend_factor(program, program.parameter_values)
 
     matrix_eq, vector_b_eq, quadratic_eq, matrix_ineq, vector_b_ineq, \
         quadratic_ineq = matrix_generation_a_b_Q(program)
     vector_c, indep_terms_c, quadratic_objective, alone_term_c = \
         matrix_generation_c_Q(program)
-    program.free_factors_objectives()
 
     time_horizon = program.get_time().get_value()
     os.chdir(curr_dir)

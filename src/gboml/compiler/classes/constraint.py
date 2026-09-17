@@ -88,33 +88,12 @@ class Constraint(Type):
 
         return self.rhs.get_leafs() + self.lhs.get_leafs()
 
-    def get_expanded_leafs(self, dictionary: dict) -> list:
-
-        return self.rhs.expanded_leafs(dictionary) + \
-               self.lhs.expanded_leafs(dictionary)
-
     def get_index_var(self):
         var_name = "t"
         if self.time_interval is not None:
             var_name = self.time_interval.get_index_name()
 
         return var_name
-
-    def get_time_range(self, definitions):
-
-        range_time = None
-        if self.time_interval is not None:
-            range_time = self.time_interval.get_range(definitions)
-
-        return range_time
-
-    def check_time(self, definitions):
-
-        predicate = True
-        if self.condition is not None:
-            predicate = self.condition.check(definitions)
-
-        return predicate
 
     def rename_inside_expressions(self, new_name, old_name):
         self.rhs.rename_node_inside(new_name, old_name)

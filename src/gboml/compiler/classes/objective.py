@@ -50,23 +50,6 @@ class Objective(Type):
         
         return var_name
 
-    def get_time_range(self, definitions):
-        
-        range_time = None
-        if self.time_interval is not None:
-
-            range_time = self.time_interval.get_range(definitions)
-        
-        return range_time
-
-    def check_time(self, definitions):
-        
-        predicate = True
-        if self.condition is not None:
-            predicate = self.condition.check(definitions)
-        
-        return predicate
-
     def get_condition(self):
 
         return self.condition

@@ -155,12 +155,12 @@ class Node:
         return self.obj_factors
 
     def free_factors_objectives(self):
-        self.obj_factors = None
+        for factor in self.obj_factors:
+            factor.free_extension()
 
     def free_factors_constraints(self):
         for factor in self.constr_factors:
             factor.free_extension()
-        self.constr_factors = None
 
     def get_constraint_factors(self):
 

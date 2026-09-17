@@ -2,193 +2,62 @@
 # Bardhyl Miftari, Mathias Berger, Hatim Djelassi, Damien Ernst,
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
-from types import CodeType
+from typing import TYPE_CHECKING
 
-import numpy as np  # type: ignore
+import numpy as np
 
 from gboml.compiler.utils import error_
-from .block import (
-    Block,
-    RowMask,
-    add_blocks,
-    combine_valid,
-    multiply_blocks,
-)
+from .block import Block
 from .constraint import Constraint
-from .expression import Expression
+from .expression import Expression, Scope
 from .identifier import Identifier
 from .objective import Objective
-from .variable import Variable
 
-
-class ByteArray:
-    """The mask the generated code writes the positions it read a parameter
-    out of range at into. It starts at a single position along every axis and
-    widens to whatever is read, so it can not be intersected in place."""
-
-    __slots__ = ("array",)
-
-    def __init__(self, rank: int) -> None:
-        self.array = np.ones((1,) * rank, dtype=bool)
-
-    def intersect(self, values: np.ndarray) -> None:
-        self.array = self.array & values
-
-
-def __f_index2__(
-    expr: np.ndarray, all_index: ByteArray, name: np.ndarray
-) -> np.ndarray:
-    max_length = len(name)
-    is_in = np.array(((0 <= expr) & (expr < max_length)), dtype=bool)
-    all_index.intersect(is_in)
-    expr = np.array(expr, dtype=int)
-
-    if not is_in.all():
-        return_value = np.array(name[np.clip(expr, 0, max_length - 1)], dtype=float)
-    else:
-        return_value = np.array(name[expr], dtype=float)
-
-    return return_value
-
-
-class Context:
-    """
-    The namespace expressions are evaluated against, plus the shape they are
-    evaluated at. `shape` holds the rows of the constraint, then the range of
-    every outer sum, outermost first. `index_names` are the indexes in scope,
-    each one bound to an array of the rank of `shape`.
-    `filled` is false on the positions the outer sums do not read, None
-    standing for the mask that reads them all.
-    """
-
-    __slots__ = ("definitions", "filled", "index_names", "shape")
-
-    def __init__(
-        self,
-        definitions: dict,
-        shape: tuple[int, ...],
-        index_names: list[str],
-        filled: np.ndarray | None = None,
-    ) -> None:
-
-        self.definitions = definitions
-        self.shape = shape
-        self.index_names = index_names
-        self.filled = filled
-
-    @property
-    def nb_rows(self) -> int:
-        return self.shape[0]
-
-    @property
-    def rank(self) -> int:
-        return len(self.shape)
-
-    def valid_rows(self, in_bounds: np.ndarray) -> RowMask:
-        """
-        Which rows survive, given where an index landed in range.
-        """
-
-        if self.filled is not None:
-            in_bounds = in_bounds | np.logical_not(self.filled)
-        in_bounds = np.broadcast_to(in_bounds, self.shape)
-        if self.rank > 1:
-            in_bounds = in_bounds.all(axis=tuple(range(1, self.rank)))
-
-        return np.array(in_bounds)
-
-    def evaluate(
-        self, python_expression: CodeType
-    ) -> tuple[np.ndarray, RowMask | None]:
-        """
-        evaluate function : evaluates a compiled variable free expression over
-        the rows. The value comes back at the rank it was evaluated at, an
-        expression reading no index at all being the one which is rankless and
-        has to be lifted. Indexing a parameter out of its range is reported
-        through the `extension_range` mask the generated code writes into,
-        which is returned alongside the value rather than kept in shared state.
-        INPUT:  python_expression -> compiled python expression
-        OUTPUT: value of rank axes, mask of the rows still valid or None
-        """
-
-        mask = ByteArray(self.rank)
-        self.definitions["extension_range"] = mask
-        value = np.asarray(eval(python_expression, self.definitions, {}))
-        if value.ndim == 0:
-            value = value.reshape((1,) * self.rank)
-        if mask.array.all():
-            return value, None
-
-        valid = self.valid_rows(mask.array)
-
-        return value, None if valid.all() else valid
+if TYPE_CHECKING:
+    from .symbolic import Expr, Indexed, ParameterSymbol
 
 
 class Node:
-    """A compiled subexpression. Subclasses only implement evaluate."""
+    """A part of an expression holding variables. Subclasses only implement factorize."""
 
     __slots__ = ()
 
-    def evaluate(self, context: Context) -> Block:
+    def factorize(self) -> Block:
 
         raise NotImplementedError
 
 
-class ConstantNode(Node):
-    """A subtree holding no variable at all, kept whole and evaluated in one
-    go rather than distributed."""
+class ConstantLeaf(Node):
+    """A subtree holding no variable at all, kept whole as one symbolic
+    expression rather than distributed."""
 
-    __slots__ = ("python_expression",)
+    __slots__ = ("symbolic",)
 
-    def __init__(self, expression: Expression) -> None:
+    def __init__(self, symbolic) -> None:
 
-        self.python_expression = expression.turn_to_python_expression()
+        self.symbolic = symbolic
 
-    def evaluate(self, context: Context) -> Block:
+    def factorize(self) -> Block:
 
-        value, valid = context.evaluate(self.python_expression)
-
-        return Block.of_constant(context.nb_rows, context.rank, value, valid)
+        return Block.of_constant(self.symbolic)
 
 
-class VariableNode(Node):
-    """One variable of the problem, giving one column per position."""
+class VariableLeaf(Node):
+    """One variable of the problem read at one index."""
 
-    __slots__ = ("index_base", "python_offset", "size")
+    __slots__ = ("symbolic",)
 
-    def __init__(
-        self, index_base: int, offset_expression: Expression | None, size: int
-    ) -> None:
+    def __init__(self, symbolic) -> None:
 
-        self.index_base = index_base
-        self.python_offset = (
-            None
-            if offset_expression is None
-            else offset_expression.turn_to_python_expression()
-        )
-        self.size = size
+        self.symbolic = symbolic
 
-    def evaluate(self, context: Context) -> Block:
+    def factorize(self) -> Block:
 
-        valid = None
-        if self.python_offset is None:
-            index_offset = np.zeros((1,) * context.rank, dtype=int)
-        else:
-            index_offset, valid = context.evaluate(self.python_offset)
-            in_bounds = (0 <= index_offset) & (index_offset < self.size)
-            if not np.all(in_bounds):
-                # an index out of range invalidates its row, and is clamped so
-                # that the column stays addressable until the row is dropped
-                valid = combine_valid(valid, context.valid_rows(in_bounds))
-                index_offset = np.clip(index_offset, 0, max(self.size - 1, 0))
-
-        return Block.of_variable(
-            context.nb_rows, context.rank, self.index_base + index_offset, valid
-        )
+        return Block.of_variable(self.symbolic)
 
 
 class AdditionNode(Node):
-    """Signed operands added together, one of them only for a unary minus."""
+    """Signed operands added together."""
 
     __slots__ = ("children",)
 
@@ -196,14 +65,14 @@ class AdditionNode(Node):
 
         self.children = children
 
-    def evaluate(self, context: Context) -> Block:
-
-        blocks = []
+    def factorize(self) -> Block:
+        total = None
         for sign, child in self.children:
-            block = child.evaluate(context)
-            blocks.append(block if sign > 0 else block.negated())
+            block = child.factorize()
+            block = block if sign == 1 else block.negated()
+            total = block if total is None else total.add(block)
 
-        return add_blocks(blocks)
+        return total
 
 
 class MultiplicationNode(Node):
@@ -214,12 +83,11 @@ class MultiplicationNode(Node):
         self.left = left
         self.right = right
 
-    def evaluate(self, context: Context) -> Block:
+    def factorize(self) -> Block:
 
-        left = self.left.evaluate(context)
-        right = self.right.evaluate(context)
-
-        return multiply_blocks(left, right)
+        left = self.left.factorize()
+        right = self.right.factorize()
+        return left.times(right)
 
 
 class DivisionNode(Node):
@@ -233,20 +101,17 @@ class DivisionNode(Node):
         self.numerator = numerator
         self.denominator = denominator
 
-    def evaluate(self, context: Context) -> Block:
+    def factorize(self) -> Block:
 
-        numerator = self.numerator.evaluate(context)
-        denominator = self.denominator.evaluate(context)
+        numerator = self.numerator.factorize()
+        denominator = self.denominator.factorize()
 
-        return numerator.scaled(
-            1.0 / denominator.constant.values,
-            combine_valid(numerator.valid, denominator.valid),
-        )
+        return numerator.scaled(1.0 / denominator.constant.coefficient)
 
 
 class PowerNode(Node):
-    """A variable expression raised to a constant non negative integer, small
-    enough for the result to stay of degree two."""
+    """A variable expression raised to a constant integer, 1 or 2, so that the
+    result stays of degree two. The degree check makes an exponent of 0 a constant."""
 
     __slots__ = ("child", "exponent")
 
@@ -255,204 +120,79 @@ class PowerNode(Node):
         self.child = child
         self.exponent = exponent
 
-    def evaluate(self, context: Context) -> Block:
+    def factorize(self) -> Block:
 
-        if self.exponent == 0:
-            return Block.of_constant(
-                context.nb_rows, context.rank, np.ones((1,) * context.rank)
-            )
-
-        result = self.child.evaluate(context)
+        child = self.child.factorize()
+        result = child
         for _ in range(self.exponent - 1):
-            result = multiply_blocks(result, self.child.evaluate(context))
+            result = result.times(child)
 
         return result
 
 
 class SumNode(Node):
-    """
-    A sum over a range. The range is laid out along the term axis, so summing
-    is what the matrix does when the terms land on the same row. Nothing is
-    unrolled here, and the very same rule applies to a sum inside a sum.
-    """
+    """A sum over a range whose body holds variables."""
 
-    __slots__ = (
-        "child",
-        "expression",
-        "index_name",
-        "line",
-        "python_condition",
-        "time_interval",
-    )
+    __slots__ = ("child", "range")
 
-    def __init__(self, child: Node, expression: Expression) -> None:
+    def __init__(self, child: Node, value_range) -> None:
 
         self.child = child
-        self.expression = expression
-        self.time_interval = expression.get_time_interval()
-        self.index_name = self.time_interval.get_index_name()
-        condition = expression.get_condition()
-        self.python_condition = (
-            None if condition is None else condition.turn_to_python_expression()
-        )
-        self.line = expression.get_line()
+        self.range = value_range
 
-    def _index_values(self, context: Context) -> tuple[np.ndarray, np.ndarray]:
-        """
-        The values of the index, laid out along one new axis after the ones
-        the outer sums are evaluated over, and the mask of the ones the range
-        reaches. A ragged range has rows of different lengths, which get_range
-        brings to the longest, marking with NaN what it leaves.
-        """
+    def factorize(self) -> Block:
 
-        bound_index_names = [
-            index_name
-            for index_name in context.index_names
-            if self.time_interval.depends_on_index([index_name])
-        ]
-        bound_index_shapes = [
-            context.definitions[index_name].shape for index_name in bound_index_names
-        ]
-        outer_shape = np.broadcast_shapes((1,) * context.rank, *bound_index_shapes)
-
-        flat_definitions = dict(context.definitions)
-        for index_name in bound_index_names:
-            flat_definitions[index_name] = np.broadcast_to(
-                context.definitions[index_name], outer_shape
-            ).ravel()
-
-        index_range = np.asarray(
-            self.time_interval.get_range(
-                flat_definitions, list_indexes=bound_index_names
-            ),
-            dtype=float,
-        )
-
-        range_width = index_range.shape[-1]
-        index_range = index_range.reshape(outer_shape + (range_width,))
-
-        filled = np.isfinite(index_range)
-        index_values = np.where(filled, index_range, 0).astype(int)
-
-        return index_values, filled
-
-    def evaluate(self, context: Context) -> Block:
-        index_values, filled = self._index_values(context)
-        width = index_values.shape[-1]
-        if width == 0:
-            error_(
-                "Error: no index in the sum at line " + str(self.line) + " is in range"
-            )
-
-        outer_index_names = [
-            index_name
-            for index_name in context.index_names
-            if index_name != self.index_name
-        ]
-        definitions = dict(context.definitions)
-
-        for index_name in outer_index_names:
-            definition: np.ndarray = definitions[index_name]
-            definitions[index_name] = definition.reshape(definition.shape + (1,))
-        definitions[self.index_name] = index_values
-
-        if self.python_condition is not None:
-            kept = eval(self.python_condition, definitions, {})
-            filled = filled & np.asarray(kept, dtype=bool)
-
-        if context.filled is None:
-            inner_filled = filled
-        else:
-            outer_filled = context.filled.reshape(context.filled.shape + (1,))
-            inner_filled = outer_filled & filled
-
-        inner_filled = None if inner_filled.all() else inner_filled
-
-        block = self.child.evaluate(
-            Context(
-                definitions,
-                context.shape + (width,),
-                outer_index_names + [self.index_name],
-                inner_filled,
-            )
-        )
-
-        return block.summed_over(width, filled)
+        return self.child.factorize().summed_over(self.range)
 
 
 def build_node(
     expression: Expression,
-    variables: dict[str, dict[str, Variable]],
-    constants: dict,
+    scope: Scope,
     collected_variables: list[list[str]],
-) -> tuple[Node, bool]:
+) -> Node:
     """
-    build_node function : compiles an expression into the tree the evaluation
-    walks. Subtrees holding no variable are kept whole, so that a coefficient
-    is evaluated once however many variables it multiplies.
-    INPUT:  expression -> Expression object
-            variables -> dictionary of <name,identifier> objects
-            constants -> dictionary of <name,array> objects
+    build_node function : compiles an expression into the tree the
+    factorization walks. Subtrees holding no variable are kept whole.
+    INPUT:  expression -> Expression object, its degree already checked
+            scope -> Scope object the names are looked up in
             collected_variables -> list the variables met are appended to
-    OUTPUT: Node object, True whenever the subtree holds a variable
+    OUTPUT: Node object
     """
+
+    if expression.degree == 0:
+        return ConstantLeaf(expression.to_symbolic(scope))
+
+    def build(child: Expression, child_scope: Scope = scope) -> Node:
+        return build_node(child, child_scope, collected_variables)
 
     e_type = expression.get_type()
     children: list[Expression] = expression.get_children()
 
     if e_type == "literal":
-        seed = expression.get_name()
-        if type(seed) == Identifier:
-            identifier: Identifier = seed
-            node_name = identifier.get_node_name()
-            name = identifier.get_name()
-            if node_name in variables and name in variables[node_name]:
-                collected_variables.append([node_name, name])
-                variable_identifier: Identifier = variables[node_name][
-                    name
-                ].get_identifier()
-
-                return VariableNode(
-                    variable_identifier.get_index(),
-                    identifier.get_expression(),
-                    variable_identifier.get_size(),
-                ), True
-
-        return ConstantNode(expression), False
+        identifier: Identifier = expression.get_name()
+        collected_variables.append([identifier.get_node_name(), identifier.get_name()])
+        return VariableLeaf(scope.resolve_variable(identifier))
 
     if e_type == "sum":
-        child, has_variable = build_node(
-            children[0], variables, constants, collected_variables
-        )
-        if not has_variable:
-            return ConstantNode(expression), False
-
-        return SumNode(child, expression), True
-
-    sub_nodes = [
-        build_node(child, variables, constants, collected_variables)
-        for child in children
-    ]
-    if not any(has_variable for _, has_variable in sub_nodes):
-        # the whole subtree is a coefficient, it is never distributed
-        return ConstantNode(expression), False
+        value_range, body_scope = scope.enter_sum(expression)
+        return SumNode(build(children[0], body_scope), value_range)
 
     if e_type == "u-":
-        return AdditionNode([(-1, sub_nodes[0][0])]), True
+        return AdditionNode([(-1, build(children[0]))])
 
-    if e_type == "+" or e_type == "-":
+    if e_type in ("+", "-"):
         sign = 1 if e_type == "+" else -1
-        return AdditionNode([(1, sub_nodes[0][0]), (sign, sub_nodes[1][0])]), True
+        return AdditionNode([(1, build(children[0])), (sign, build(children[1]))])
 
     if e_type == "*":
-        return MultiplicationNode(sub_nodes[0][0], sub_nodes[1][0]), True
+        return MultiplicationNode(build(children[0]), build(children[1]))
 
     if e_type == "/":
-        return DivisionNode(sub_nodes[0][0], sub_nodes[1][0]), True
+        return DivisionNode(build(children[0]), build(children[1]))
 
     if e_type == "**":
-        exponent = children[1].evaluate_as_constant_integer(constants)
-        return PowerNode(sub_nodes[0][0], exponent), True
+        # the degree check gave a power the degree of its base times its exponent
+        return PowerNode(build(children[0]), expression.degree // children[0].degree)
 
     error_(
         "The operator '" + str(e_type) + "' is not allowed on variables at "
@@ -469,15 +209,21 @@ class Factorize:
 
     def __init__(self, obj: Constraint | Objective) -> None:
 
-        self.name = None
+        self.name = obj.name
         self.obj = obj
-        self.node = None
+        self.block = None
+        self.rows = None
+        self.reads_out_of_range = None
         self.variables = []
         self.line = obj.get_line()
-        self.type_fact = "objective" if type(obj) == Objective else "constraint"
-        self.extension_type = ""
+        if type(obj) == Objective:
+            self.type_fact = "objective"
+            self.extension_type = obj.get_type()
+        else:
+            self.type_fact = "constraint"
+            self.extension_type = obj.get_sign()
         self.sparse = None
-        self.independent_terms = []
+        self.independent_terms = np.zeros(0)
         self.quadratic_terms = None
 
     def get_name(self) -> str:
@@ -495,11 +241,11 @@ class Factorize:
         """
 
         self.sparse = None
-        self.independent_terms = None
+        self.independent_terms = np.zeros(0)
         self.quadratic_terms = None
 
     def has_variables(self) -> bool:
-        return bool(self.variables)
+        return self.block.degree() > 0
 
     def nb_rows(self) -> int:
         """
@@ -511,129 +257,102 @@ class Factorize:
 
         return len(self.independent_terms)
 
-    def factorize_constraint(
-        self, variables: dict[str, dict[str, Variable]], constants: dict
-    ) -> None:
+    def factorize_constraint(self, scope: Scope) -> None:
         """
-        factorize_constraint function : compiles both sides of the constraint
-        into a single expression, the left hand side minus the right hand side
-        INPUT:  variables -> dictionary of <name,identifier> objects
-                constants -> dictionary of <name,array> objects
-        OUTPUT: None
+        factorize_constraint function : writes the left hand side minus the
+        right hand side of the constraint as a block
         """
 
         constraint = self.obj
-        self.name = constraint.name
-        left, _ = build_node(constraint.get_lhs(), variables, constants, self.variables)
-        right, _ = build_node(
-            constraint.get_rhs(), variables, constants, self.variables
+        self.rows, scope = scope.enter_rows(
+            constraint.get_time_interval(),
+            constraint.get_condition(),
+            constraint.get_index_var(),
+            self.index_is_read(),
         )
-        self.node = AdditionNode([(1, left), (-1, right)])
+        left = build_node(constraint.get_lhs(), scope, self.variables)
+        right = build_node(constraint.get_rhs(), scope, self.variables)
+        self.block = AdditionNode([(1, left), (-1, right)]).factorize()
+        self.reads_out_of_range = self.block.reads_out_of_range
 
-    def factorize_objective(
-        self, variables: dict[str, dict[str, Variable]], constants: dict
-    ) -> None:
+    def factorize_objective(self, scope: Scope) -> None:
         """
-        factorize_objective function : compiles the expression of the objective
-        INPUT:  variables -> dictionary of <name,identifier> objects
-                constants -> dictionary of <name,array> objects
-        OUTPUT: None
+        factorize_objective function : writes the expression of the objective as a block
         """
 
         objective = self.obj
-        self.name = objective.name
-        self.node, _ = build_node(
-            objective.get_expression(), variables, constants, self.variables
+        self.rows, scope = scope.enter_rows(
+            objective.get_time_interval(),
+            objective.get_condition(),
+            objective.get_index_var(),
+            self.index_is_read(),
         )
+        self.block = build_node(
+            objective.get_expression(), scope, self.variables
+        ).factorize()
+        self.reads_out_of_range = self.block.reads_out_of_range
 
-    def _row_index_values(
-        self, definitions: dict
-    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int_]], bool]:
-        """
-        _row_index_values function : the values the index of the constraint
-        takes, that is one per row -- they are the rows.
-        INPUT:  definitions -> namespace the expressions are evaluated against
-        OUTPUT: the values of the index, True whenever the range was written
-                explicitly
-        """
-
+    def index_is_read(self) -> bool:
+        """Whether the text or the `where` condition reads the index, which gives one row per time step."""
         obj = self.obj
         index_name = obj.get_index_var()
-        condition = obj.get_condition()
-        definitions["extension_range"] = ByteArray(1)
-        row_range = obj.get_time_range(definitions)
-        range_is_written = row_range is not None
-
-        if range_is_written:
-            index_values = np.array(row_range)
+        if self.type_fact == "constraint":
+            expressions = [obj.get_rhs(), obj.get_lhs()]
         else:
-            if self.type_fact == "constraint":
-                expressions = [obj.get_rhs(), obj.get_lhs()]
-            else:
-                expressions = [obj.get_expression()]
-            if condition is not None:
-                expressions.append(condition)
+            expressions = [obj.get_expression()]
+        if obj.get_condition() is not None:
+            expressions.append(obj.get_condition())
+        return any(
+            expression.depends_on_index([index_name]) for expression in expressions
+        )
 
-            index_is_read = any(
-                expression.depends_on_index([index_name]) for expression in expressions
+    def derivative(self, target: "ParameterSymbol | Indexed") -> Block:
+        """The block with every coefficient differentiated with respect to a parameter or to one entry of a table."""
+        structure_parameters = self.rows.parameters_read | self.reads_out_of_range.parameters_read
+        if not target.parameters_read.isdisjoint(structure_parameters):
+            error_(
+                "ERROR: the derivative with respect to "
+                + repr(target)
+                + " can not be taken, since it decides which rows or which entries are read at line "
+                + str(self.line)
             )
-            nb_rows = definitions["T"] if index_is_read else 1
-            index_values = np.arange(nb_rows)
+        return self.block.derivative(target)
 
-        if condition is not None:
-            definitions[index_name] = index_values
-            kept = eval(condition.turn_to_python_expression(), definitions, {})
-            # a condition which does not read the index gives a single bool,
-            # keeping either every row or none of them
-            kept = np.broadcast_to(np.asarray(kept, dtype=bool), index_values.shape)
-            index_values = index_values[kept]
+    def replace(self, replacements: dict["ParameterSymbol", "Expr"]) -> None:
+        """Replaces every parameter of `replacements` in the coefficients of the block."""
+        structure_parameters = self.rows.parameters_read | self.reads_out_of_range.parameters_read
+        if not replacements.keys().isdisjoint(structure_parameters):
+            error_(
+                "ERROR: the parameter "
+                + ", ".join(map(repr, replacements.keys() & structure_parameters))
+                + " can not be replaced, since it decides which rows or which entries are read at line "
+                + str(self.line)
+            )
+        self.block = self.block.replace(replacements)
 
-        return index_values, range_is_written
-
-    def extend(self, definitions: dict) -> None:
+    def extend(self, parameter_values: dict, cache: dict) -> None:
         """
-        extend function : evaluates the compiled expression over every row of
-        the constraint at once and gathers the result in the arrays the
-        matrices of the problem are built from
-        INPUT:  definitions -> dictionary of <name,array> objects
-        OUTPUT: None
+        extend function : evaluates the block over every row of the
+        constraint at once, with the given parameter values, and gathers the
+        result in the arrays the matrices of the problem are built from
         """
 
         obj = self.obj
-        definitions = {
-            "sum": sum,
-            "range": range,
-            "len": len,
-            "__f_index__": __f_index2__,
-            **definitions,
-        }
+        if self.rows.reads_out_of_range.evalf(parameter_values, self.line) > 0:
+            error_(
+                "ERROR: the range or the condition of the rows of "
+                + str(obj)
+                + " reads a table outside of its entries at line "
+                + str(self.line)
+            )
+        row_index_values, valid = self.block.evaluate_over(
+            self.rows, self.reads_out_of_range, parameter_values, cache, self.line
+        )
 
-        if self.type_fact == "constraint":
-            self.extension_type = obj.get_sign()
-        else:
-            self.extension_type = obj.get_type()
-
-        row_index_values, range_is_written = self._row_index_values(definitions)
-        row_index_name = obj.get_index_var()
-        nb_rows = len(row_index_values)
-        definitions[row_index_name] = row_index_values
-
-        if nb_rows == 0:
-            # a part is None exactly when it holds no entry
-            self.sparse = None
-            self.quadratic_terms = None
-            self.independent_terms = np.zeros(0)
-
-            return
-
-        block = self.node.evaluate(Context(definitions, (nb_rows,), [row_index_name]))
-        valid = block.valid
-        if valid is None:
-            valid = np.ones(nb_rows, dtype=bool)
-
-        if not valid.any():
+        if len(row_index_values) > 0 and not valid.any():
+            row_index_name = obj.get_index_var()
             dropped = str(row_index_values[~valid])
-            if range_is_written:
+            if obj.get_time_interval() is not None:
                 error_(
                     "Constraint : "
                     + str(obj)
@@ -650,17 +369,12 @@ class Factorize:
                 "equal to %s"
                 % (str(obj), str(obj.get_line()), str(row_index_name), dropped)
             )
-            self.sparse = None
-            self.quadratic_terms = None
-            self.independent_terms = np.zeros(0)
 
-            return
+        constant, self.sparse, self.quadratic_terms = self.block.assemble(valid)
 
         if self.type_fact == "constraint":
             # the matrix holds the coefficients of the left hand side minus the
             # right hand side, so the independent term moves to the other side
-            self.independent_terms = -block.constant_over(valid)
+            self.independent_terms = -constant
         else:
-            self.independent_terms = block.constant_over(valid)
-
-        self.sparse, self.quadratic_terms = block.assemble(valid)
+            self.independent_terms = constant

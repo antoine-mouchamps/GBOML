@@ -3,12 +3,13 @@
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
 
-from .classes import Program
-from .utils import error_, get_only_objects_in_nested_dict_layer
+from .classes import Node, Program
+from .utils import error_
 
 import numpy as np  # type: ignore
 from scipy.sparse import coo_array, coo_matrix  # type: ignore
 import multiprocessing as mp
+from functools import partial
 
 
 def has_quadratic_terms(quadratic_eq, quadratic_ineq, quadratic_objective) -> bool:
@@ -25,24 +26,6 @@ def has_quadratic_terms(quadratic_eq, quadratic_ineq, quadratic_objective) -> bo
         quadratic_terms is not None and quadratic_terms.nnz > 0
         for quadratic_terms in [quadratic_eq, quadratic_ineq, quadratic_objective]
     )
-
-
-def flatten_definitions_and_get_values(definitions):
-    flatten_dict = {}
-    for key, value in definitions.items():
-        if isinstance(value, dict):
-            for sub_key, sub_param in value.items():
-                flatten_key = key+"."+sub_key
-                if sub_param.get_type() == "expression":
-                    flatten_dict[flatten_key] = sub_param.get_value()[0]
-                else:
-                    flatten_dict[flatten_key] = np.array(sub_param.get_value())
-        else:
-            if value.get_type() == "expression":
-                flatten_dict[key] = value.get_value()[0]
-            else:
-                flatten_dict[key] = np.array(value.get_value())
-    return flatten_dict
 
 
 def get_flat_nodes_edges_ordered(nodes, hyperedges, without_hyperedges=False):
@@ -62,40 +45,11 @@ def get_flat_nodes_edges_ordered(nodes, hyperedges, without_hyperedges=False):
     return all_nodes_edges
 
 
-def get_flat_nodes_edges_and_definition(nodes, hyperedges,
-                                        definitions, accumulator_dict):
-    node_definition_tuples = []
-    edge_definition_tuples = []
-    for node in nodes:
-        node_name = node.get_name()
-        sub_nodes = node.get_sub_nodes()
-        sub_edges = node.get_sub_hyperedges()
-        accumulator_dict[node_name] = \
-            get_only_objects_in_nested_dict_layer(definitions[node_name])
-        node_definition_tuples.append([node, accumulator_dict.copy()])
-        sub_node_tuples, sub_edge_tuples = \
-            get_flat_nodes_edges_and_definition(sub_nodes, sub_edges,
-                                                definitions[node_name],
-                                                accumulator_dict)
-        node_definition_tuples += sub_node_tuples
-        edge_definition_tuples += sub_edge_tuples
-        accumulator_dict.pop(node_name)
-
-    for edge in hyperedges:
-        edge_name = edge.get_name()
-        accumulator_dict[edge_name] = \
-            get_only_objects_in_nested_dict_layer(definitions[edge_name])
-        edge_definition_tuples.append([edge, accumulator_dict.copy()])
-        accumulator_dict.pop(edge_name)
-
-    return node_definition_tuples, edge_definition_tuples
-
-
-def extend_node_factors_mapping(list_elements_definitions_tuple):
-    list_elements, definitions = list_elements_definitions_tuple
+def extend_node_factors_mapping(parameter_values, list_elements):
+    cache = {}
     all_triplet_matrix_independent_terms_type = []
     for element in list_elements:
-        element.extend(definitions)
+        element.extend(parameter_values, cache)
         all_triplet_matrix_independent_terms_type.append(
             [
                 element.sparse,
@@ -107,34 +61,14 @@ def extend_node_factors_mapping(list_elements_definitions_tuple):
     return all_triplet_matrix_independent_terms_type
 
 
-def extend_factor_on_multiple_processes(root: Program,
-                                        definitions,
-                                        nb_processes) -> None:
-    nodes = root.get_nodes()
-    hyperlinks = root.get_links()
-    all_tuples = []
-    accumulator_dict = {"global": definitions["global"], "T": definitions["T"]}
-    node_definition_tuples, edge_definition_tuples = \
-        get_flat_nodes_edges_and_definition(nodes, hyperlinks, definitions,
-                                            accumulator_dict)
-    for node, node_definition in node_definition_tuples:
-        flat_node_definitions = flatten_definitions_and_get_values(node_definition)
-        obj_fact_list = node.get_objective_factors()
-        constr_fact_list = node.get_constraint_factors()
-        all_tuples.append([obj_fact_list + constr_fact_list, flat_node_definitions])
-
-    for link, link_definition in edge_definition_tuples:
-        flat_link_definitions = flatten_definitions_and_get_values(link_definition)
-        constr_fact_list = link.get_constraint_factors()
-        all_tuples.append([constr_fact_list, flat_link_definitions])
+def extend_factor_on_multiple_processes(root: Program, parameter_values: dict, nb_processes) -> None:
+    all_factor_lists = [element_factors(element) for element in
+                         get_flat_nodes_edges_ordered(root.get_nodes(), root.get_links())]
 
     with mp.Pool(processes=nb_processes) as pool:
-        results = pool.map(extend_node_factors_mapping, all_tuples)
-    # pool.close()
+        results = pool.map(partial(extend_node_factors_mapping, parameter_values), all_factor_lists)
 
-    for i, node_factors in enumerate(all_tuples):
-        node_results = results[i]
-        factor_list, node_dict = node_factors
+    for factor_list, node_results in zip(all_factor_lists, results):
         for j, factor in enumerate(factor_list):
             sparse, independent_terms, extension_type, quadratic_terms = node_results[j]
             factor.sparse = sparse
@@ -143,27 +77,18 @@ def extend_factor_on_multiple_processes(root: Program,
             factor.quadratic_terms = quadratic_terms
 
 
-def extend_factor(root: Program, definitions) -> None:
-    nodes = root.get_nodes()
-    hyperlinks = root.get_links()
-    accumulator_dict = {"global": definitions["global"], "T": definitions["T"]}
-    node_definition_tuples, edge_definition_tuples = \
-        get_flat_nodes_edges_and_definition(nodes, hyperlinks, definitions,
-                                            accumulator_dict)
-    for node, node_definition in node_definition_tuples:
-        flat_node_definitions = flatten_definitions_and_get_values(node_definition)
-        obj_fact_list = node.get_objective_factors()
-        for i, object_fact in enumerate(obj_fact_list):
-            object_fact.extend(flat_node_definitions)
-        constr_fact_list = node.get_constraint_factors()
-        for constr_fact in constr_fact_list:
-            constr_fact.extend(flat_node_definitions)
+def element_factors(element) -> list:
+    """The objective factors of a node, then the constraint factors of a node or a hyperedge."""
+    objective_factors = element.get_objective_factors() if isinstance(element, Node) else []
+    return objective_factors + element.get_constraint_factors()
 
-    for link, link_definition in edge_definition_tuples:
-        flat_link_definitions = flatten_definitions_and_get_values(link_definition)
-        constr_fact_list = link.get_constraint_factors()
-        for constr_fact in constr_fact_list:
-            constr_fact.extend(flat_link_definitions)
+
+def extend_factor(root: Program, parameter_values: dict) -> None:
+    # one cache for the whole model, dropped when the extension ends
+    cache = {}
+    for element in get_flat_nodes_edges_ordered(root.get_nodes(), root.get_links()):
+        for factor in element_factors(element):
+            factor.extend(parameter_values, cache)
 
 
 def matrix_generation_c_Q(root: Program) -> tuple:

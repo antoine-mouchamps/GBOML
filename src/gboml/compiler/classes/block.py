@@ -2,185 +2,219 @@
 # Bardhyl Miftari, Mathias Berger, Hatim Djelassi, Damien Ernst,
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
+from collections.abc import Iterable
+
 import numpy as np  # type: ignore
 from scipy.sparse import coo_array  # type: ignore
+
+from .symbolic import (
+    Add,
+    Context,
+    Expr,
+    Idx,
+    Indexed,
+    Number,
+    ParameterSymbol,
+    Range,
+    Sum,
+    check_parameter_values,
+)
 
 RowMask = np.ndarray[tuple[int], np.dtype[np.bool_]]
 
 
-def combine_valid(first: RowMask | None, second: RowMask | None) -> RowMask | None:
-    if first is None:
-        return second
-    if second is None:
-        return first
-
-    return first & second
-
-
 class Term:
     """
-    One rectangle of entries, each of them the product of the variables at
-    `columns` scaled by `values`. `columns` is a sequence of one column array
-    for a degree one term, of two for a degree two one. `filled` is false on
-    the entries a `where` condition rejected and on the ones a ragged range
-    does not reach. `widths` holds one width per sum whose index the columns
-    read, outermost first : a sum they ignore is summed away when it ends. The
-    entries of a row are laid out over all of the widths, so a row carries
-    prod(widths) of them.
+    The sum, over every position of `ranges`, of the product of `variables`
+    scaled by `coefficient`. `ranges` are outermost first, and the index of each
+    is named after its position, the innermost being 0. The number of variables
+    is the degree of the term, and a term without variables has no ranges either.
+
+    During one evaluation, the term also holds its rectangle of entries over the
+    rows: `values`, one array of `columns` per variable, the `widths` of its ranges,
+    and `filled`, false on the entries a `where` condition rejected and on the
+    ones a ragged range does not reach.
     """
 
-    __slots__ = ("columns", "filled", "values", "widths")
+    __slots__ = (
+        "ranges",
+        "variables",
+        "coefficient",
+        "values",
+        "columns",
+        "widths",
+        "filled",
+    )
 
     def __init__(
         self,
-        values: np.ndarray,
-        columns: tuple[np.ndarray, ...] = (),
-        widths: tuple[int, ...] = (),
-        filled: np.ndarray | None = None,
+        ranges: tuple[Range, ...],
+        variables: Iterable[Indexed],
+        coefficient: Expr,
     ) -> None:
-
-        if filled is None:
-            filled = np.ones((1,) * values.ndim, dtype=bool)
-        assert values.ndim > len(widths) and all(
-            array.ndim == values.ndim for array in (filled, *columns)
+        self.ranges = ranges
+        # a product does not depend on the order of its variables, so x*y and y*x are one key
+        self.variables = tuple(
+            sorted(variables, key=lambda variable: variable.sort_key)
         )
-        self.values = values
-        self.columns = columns
-        self.widths = widths
-        self.filled = filled
+        self.coefficient = coefficient
+        self.values = None
+        self.columns = None
+        self.widths = None
+        self.filled = None
+
+    @property
+    def key(self) -> tuple:
+        return self.ranges, self.variables
+
+    @property
+    def sort_key(self) -> tuple:
+        return (
+            tuple(variable.sort_key for variable in self.variables),
+            tuple(value_range.sort_key for value_range in self.ranges),
+        )
 
     def degree(self) -> int:
         """The number of variables multiplied together in every entry."""
+        return len(self.variables)
 
-        return len(self.columns)
-
-    def scaled(self, factor: np.ndarray) -> "Term":
-
-        return Term(
-            # a factor which does not vary along the widths, which trail
-            self.values * factor.reshape(factor.shape + (1,) * len(self.widths)),
-            self.columns,
-            self.widths,
-            self.filled,
-        )
+    def scaled(self, factor: Expr) -> "Term":
+        return Term(self.ranges, self.variables, self.coefficient * factor)
 
     def negated(self) -> "Term":
+        return Term(self.ranges, self.variables, -self.coefficient)
 
-        return Term(-self.values, self.columns, self.widths, self.filled)
-
-    def summed_over(self, width: int, kept: np.ndarray | None) -> "Term":
-        """
-        The term a sum gives back when it ends. Its range was the innermost
-        axis the body was evaluated over and becomes the outermost width,
-        which is the very same axis : nothing is moved, and only the mask of
-        the index values the sum keeps has to be brought in. A term whose
-        columns do not read the index is the same entry on every index
-        value, and is added up here instead ; a constant, having no column at
-        all, always is.
-        """
-
-        axis = self.values.ndim - len(self.widths) - 1
-        if kept is not None:
-            assert kept.shape[axis] == width
-            kept = kept.reshape(kept.shape + (1,) * len(self.widths))
-
-        if any(column.shape[axis] != 1 for column in self.columns):
-            return Term(
-                self.values,
-                self.columns,
-                (width,) + self.widths,
-                self.filled if kept is None else self.filled & kept,
-            )
-
-        if self.values.shape[axis] == 1:
-            nb_kept_index_values = width if kept is None else kept.sum(axis=axis)
-            values = self.values.squeeze(axis) * nb_kept_index_values
-        else:
-            values_to_sum = self.values
-            if kept is not None:
-                values_to_sum = np.where(kept, values_to_sum, 0.0)
-            values = values_to_sum.sum(axis=axis)
-
+    def replace(self, replacements: dict) -> "Term":
         return Term(
-            values,
-            tuple(column.squeeze(axis) for column in self.columns),
-            self.widths,
-            self.filled.squeeze(axis),
+            tuple(value_range.replace(replacements) for value_range in self.ranges),
+            (variable.replace(replacements) for variable in self.variables),
+            self.coefficient.replace(replacements),
         )
+
+    def times(self, other: "Term") -> "Term":
+        """The product of two terms of degree one, the one sorting first placed outside, so their order never matters."""
+        left, right = sorted((self, other), key=lambda term: term.sort_key)
+        nb_right_ranges = len(right.ranges)
+        if nb_right_ranges and left.ranges:
+            table = left.coefficient.table
+            left = left.replace(
+                {
+                    Idx(("term", position), table): Idx(
+                        ("term", position + nb_right_ranges), table
+                    )
+                    for position in range(len(left.ranges))
+                }
+            )
+        return Term(
+            left.ranges + right.ranges,
+            left.variables + right.variables,
+            left.coefficient * right.coefficient,
+        )
+
+    def summed_over(self, value_range: Range) -> "Term":
+        """The term of a sum: a term reading its index keeps its range, any other takes the sum in its coefficient."""
+        index = value_range.index
+        if not any(
+            index in expression.free_indexes
+            for expression in self.variables + self.ranges
+        ):
+            return Term(
+                self.ranges, self.variables, Sum(self.coefficient, value_range)
+            )
+        widened = Term((value_range,) + self.ranges, self.variables, self.coefficient)
+        return widened.replace(
+            {index: Idx(("term", len(self.ranges)), value_range.table)}
+        )
+
+    @property
+    def reads_out_of_range(self) -> Expr:
+        """The number of reads out of range in the term, over every position of its ranges."""
+        count = Add(
+            [(expression.reads_out_of_range, 1) for expression in (self.coefficient, *self.variables)]
+        )
+        for value_range in reversed(self.ranges):
+            count = value_range.reads_out_of_range + Sum(count, value_range)
+        return count
+
+    def evaluate_over(self, row_context: Context) -> None:
+        """Stores the rectangle of the term over the rows of the context."""
+        context = row_context
+        for value_range in self.ranges:
+            context = context.widened(value_range, *value_range.evaluate_over(context))
+
+        # the coefficient keeps the dtype of what it was computed from, often integers
+        self.values = self.coefficient.evaluate_over(context).astype(float, copy=False)
+        self.columns = tuple(variable.evaluate_over(context) for variable in self.variables)
+        self.widths = context.shape[context.nb_row_axes :]
+        self.filled = (
+            np.ones((1,) * self.values.ndim, dtype=bool)
+            if context.filled is None
+            else context.filled
+        )
+        assert self.values.ndim > len(self.widths) and all(
+            array.ndim == self.values.ndim for array in (self.filled, *self.columns)
+        )
+
+    def free_evaluation(self) -> None:
+        """Releases the rectangle of the term, once assembly has read it."""
+        self.values = None
+        self.columns = None
+        self.widths = None
+        self.filled = None
 
 
 class Block:
     """
-    The polynomial an expression reduces to over `nb_rows` rows. See the module
-    docstring.
+    A polynomial of degree at most two in the variables: its constant term,
+    and its terms of degree one and two by key, no two of them sharing a key.
     """
 
-    __slots__ = ("nb_rows", "constant", "linear", "quadratic", "valid")
+    __slots__ = ("constant", "linear", "quadratic")
 
     def __init__(
         self,
-        nb_rows: int,
         constant: Term,
-        linear: list[Term] | None = None,
-        quadratic: list[Term] | None = None,
-        valid: RowMask | None = None,
+        linear: list[Term],
+        quadratic: list[Term],
     ) -> None:
-        self.nb_rows = nb_rows
         self.constant = constant
-        self.linear = linear if linear is not None else []
-        self.quadratic = quadratic if quadratic is not None else []
-        self.valid = valid
+        self.linear = {}
+        self.quadratic = {}
+        # terms sharing a key are added up once, and those adding up to zero are left out
+        for stored, input_terms in ((self.linear, linear), (self.quadratic, quadratic)):
+            for term in input_terms:
+                if term.key in stored:
+                    term = Term(
+                        term.ranges,
+                        term.variables,
+                        stored[term.key].coefficient + term.coefficient,
+                    )
+                if term.coefficient.is_zero:
+                    stored.pop(term.key, None)
+                else:
+                    stored[term.key] = term
 
     @staticmethod
-    def of_constant(
-        nb_rows: int, rank: int, value: np.ndarray, valid: RowMask | None = None
-    ) -> "Block":
-        """
-        of_constant function : the block a subexpression holding no variable
-                               reduces to. The compiled expression gives back
-                               one value per position of the rank it was
-                               evaluated at, an axis it does not vary along
-                               being length one
-        INPUT:  nb_rows -> number of rows
-                rank -> number of axes the expression is evaluated over
-                value -> the value the compiled expression evaluated to
-                valid -> mask of the rows still valid, or None
-        OUTPUT: Block
-        """
-        value = np.asarray(value, dtype=float)
-        assert value.ndim == rank
-
-        return Block(nb_rows, Term(value), valid=valid)
+    def of_constant(expression: Expr) -> "Block":
+        return Block(Term((), (), expression), [], [])
 
     @staticmethod
-    def of_variable(
-        nb_rows: int, rank: int, column: np.ndarray, valid: RowMask | None = None
-    ) -> "Block":
-        """
-        of_variable function : the block one variable of the problem reduces
-                               to, that is a single degree one entry per
-                               position
-        INPUT:  nb_rows -> number of rows
-                rank -> number of axes the expression is evaluated over
-                column -> the column the variable is read at, one per position
-                          or one for all of them
-                valid -> mask of the rows still valid, or None
-        OUTPUT: Block
-        """
-
-        column = np.asarray(column, dtype=int)
-        assert column.ndim == rank
-
+    def of_variable(variable: Indexed) -> "Block":
         return Block(
-            nb_rows,
-            Term(np.zeros((1,) * rank)),
-            [Term(np.ones((1,) * rank), (column,))],
-            valid=valid,
+            Term((), (), Number(0, variable.table)),
+            [Term((), (variable,), Number(1, variable.table))],
+            [],
         )
 
-    def degree(self) -> int:
-        """The degree of the expression with respect to the variables."""
+    @property
+    def terms(self) -> list[Term]:
+        return [self.constant, *self.linear.values(), *self.quadratic.values()]
 
+    @property
+    def reads_out_of_range(self) -> Expr:
+        return Add([(term.reads_out_of_range, 1) for term in self.terms])
+
+    def degree(self) -> int:
         if self.quadratic:
             return 2
         if self.linear:
@@ -191,178 +225,141 @@ class Block:
     def negated(self) -> "Block":
 
         return Block(
-            self.nb_rows,
             self.constant.negated(),
-            [term.negated() for term in self.linear],
-            [term.negated() for term in self.quadratic],
-            self.valid,
+            [term.negated() for term in self.linear.values()],
+            [term.negated() for term in self.quadratic.values()],
         )
 
-    def scaled(self, factor: np.ndarray, valid: RowMask | None = None) -> "Block":
-        """
-        scaled function : multiplies the whole polynomial by a value which does
-                          not depend on the variables.
-        INPUT:  factor -> ndarray of the rank the block is evaluated at
-                valid -> the mask to carry instead of the block's own, for a
-                         caller which has already combined it with the mask of
-                         wherever the factor came from
-        OUTPUT: Block
-        """
+    def scaled(self, factor: Expr) -> "Block":
+        """The block with every coefficient multiplied by `factor`, which holds no variable."""
 
+        if factor.is_zero:
+            return Block.of_constant(factor)
         return Block(
-            self.nb_rows,
             self.constant.scaled(factor),
-            [term.scaled(factor) for term in self.linear],
-            [term.scaled(factor) for term in self.quadratic],
-            self.valid if valid is None else valid,
+            [term.scaled(factor) for term in self.linear.values()],
+            [term.scaled(factor) for term in self.quadratic.values()],
         )
 
-    def summed_over(self, width: int, filled: np.ndarray) -> "Block":
-        """
-        The block a sum reduces to, once its body has been evaluated over the
-        range. Whatever does not read the index is actually summed over its
-        values, A term which does read the index keeps one entry per index
-        value, for the matrix to add up later. `valid` is a row mask already.
-        """
-
-        kept = None if bool(filled.all()) else filled
-
+    def summed_over(self, value_range: Range) -> "Block":
+        """The block of a sum, whose terms can meet on one key once their ranges are renamed."""
         return Block(
-            self.nb_rows,
-            self.constant.summed_over(width, kept),
-            [term.summed_over(width, kept) for term in self.linear],
-            [term.summed_over(width, kept) for term in self.quadratic],
-            self.valid,
+            self.constant.summed_over(value_range),
+            [term.summed_over(value_range) for term in self.linear.values()],
+            [term.summed_over(value_range) for term in self.quadratic.values()],
         )
 
-    def constant_over(self, valid: RowMask) -> np.ndarray:
-        """
-        constant_over function : the degree zero part as one value per row the
-                                 mask keeps. This is the boundary the shape of
-                                 the evaluation stops at, the matrices being
-                                 built from a flat vector
-        INPUT:  valid -> mask over the rows of the block
-        OUTPUT: ndarray of shape (number of rows the mask keeps,)
-        """
+    def add(self, other: "Block") -> "Block":
+        return Block(
+            Term((), (), self.constant.coefficient + other.constant.coefficient),
+            [*self.linear.values(), *other.linear.values()],
+            [*self.quadratic.values(), *other.quadratic.values()],
+        )
 
-        return np.broadcast_to(self.constant.values, (self.nb_rows,))[valid]
+    def times(self, other: "Block") -> "Block":
+        """The product: a block of degree zero scales the other, and two degree one parts give the degree two part."""
+        if other.degree() == 0:
+            return self.scaled(other.constant.coefficient)
+        if self.degree() == 0:
+            return other.scaled(self.constant.coefficient)
 
-    def assemble(self, valid: RowMask) -> tuple[coo_array | None, coo_array | None]:
+        left_constant = self.constant.coefficient
+        right_constant = other.constant.coefficient
+        return Block(
+            self.constant.scaled(right_constant),
+            [
+                *(term.scaled(right_constant) for term in self.linear.values()),
+                *(term.scaled(left_constant) for term in other.linear.values()),
+            ],
+            [
+                left.times(right)
+                for left in self.linear.values()
+                for right in other.linear.values()
+            ],
+        )
+
+    def replace(self, replacements: dict) -> "Block":
+        """The block with every index or parameter of `replacements` replaced, which can make two keys one."""
+        return Block(
+            self.constant.replace(replacements),
+            [term.replace(replacements) for term in self.linear.values()],
+            [term.replace(replacements) for term in self.quadratic.values()],
+        )
+
+    def derivative(self, target: ParameterSymbol | Indexed) -> "Block":
+        """The block whose coefficients are the derivatives of these ones with respect to `target`."""
+        return Block(
+            Term((), (), self.constant.coefficient.derivative(target)),
+            [
+                Term(term.ranges, term.variables, term.coefficient.derivative(target))
+                for term in self.linear.values()
+            ],
+            [
+                Term(term.ranges, term.variables, term.coefficient.derivative(target))
+                for term in self.quadratic.values()
+            ],
+        )
+
+    def evaluate_over(
+        self,
+        rows: Range,
+        reads_out_of_range: Expr,
+        parameter_values: dict,
+        cache: dict,
+        line: int,
+    ) -> tuple[np.ndarray, RowMask]:
         """
-        assemble function : the degree one and the degree two parts as the
-        sparse arrays the matrices of the problem are built from, over the rows
-        the mask keeps. A part with no entry at all comes back as None.
-
-        The block is left empty : its terms are released one by one as they are
-        read, so that the memory they hold is gone before the sparse array is
-        built. Assembling is the last thing done with a block.
-        INPUT:  valid -> mask over the rows of the block
-        OUTPUT: (coo_array or None, coo_array or None)
+        The values the row index takes, and the rows where `reads_out_of_range`
+        is zero. Every term keeps its evaluation until `assemble` reads it.
         """
+        terms = self.terms
+        # checked once here, so that every read of a value in the evaluation trusts it
+        check_parameter_values(
+            rows.parameters_read.union(
+                reads_out_of_range.parameters_read,
+                *(
+                    expression.parameters_read
+                    for term in terms
+                    for expression in (term.coefficient, *term.ranges, *term.variables)
+                ),
+            ),
+            parameter_values,
+        )
+        # the rows are evaluated in a context without any axis, which they then widen
+        context = Context(parameter_values, (), {}, cache, line=line)
+        row_values, filled = rows.evaluate_over(context)
+        row_index_values = row_values[filled]
+        nb_rows = len(row_index_values)
+        if nb_rows == 0:
+            return row_index_values, np.zeros(0, dtype=bool)
 
+        context = context.widened(rows, row_index_values, np.ones(nb_rows, dtype=bool))
+        valid = np.broadcast_to(reads_out_of_range.evaluate_over(context) == 0, (nb_rows,))
+        for term in terms:
+            term.evaluate_over(context)
+        return row_index_values, valid
+
+    def assemble(self, valid: RowMask) -> tuple:
+        """
+        Over the valid rows, the constant and the degree one and two parts as
+        sparse arrays, a part holding no entry being None.
+        """
+        if not valid.any():
+            for term in self.terms:
+                term.free_evaluation()
+            return np.zeros(0), None, None
+
+        nb_rows = len(valid)
+        constant = np.broadcast_to(self.constant.values, (nb_rows,))[valid]
+        self.constant.free_evaluation()
         nb_kept_rows = np.count_nonzero(valid)
-
-        return (
-            _build_sparse_array(self.linear, valid, nb_kept_rows, self.nb_rows),
-            _build_sparse_array(self.quadratic, valid, nb_kept_rows, self.nb_rows),
+        linear = _build_sparse_array(
+            list(self.linear.values()), valid, nb_kept_rows, nb_rows
         )
-
-
-def add_blocks(blocks: list[Block]) -> Block:
-    """
-    add_blocks function : sums any number of blocks at once.
-    INPUT:  blocks -> list of Block objects, all over the same rows
-    OUTPUT: Block
-    """
-
-    if len(blocks) == 1:
-        return blocks[0]
-
-    nb_rows = blocks[0].nb_rows
-    constant = blocks[0].constant.values
-    linear = list(blocks[0].linear)
-    quadratic = list(blocks[0].quadratic)
-    valid = blocks[0].valid
-    for block in blocks[1:]:
-        # every block was evaluated over the same axes, so the constants line
-        # up without anything having to be inserted
-        constant = constant + block.constant.values
-        linear += block.linear
-        quadratic += block.quadratic
-        valid = combine_valid(valid, block.valid)
-
-    return Block(nb_rows, Term(constant), linear, quadratic, valid)
-
-
-def multiply_blocks(left: Block, right: Block) -> Block:
-    """
-    multiply_blocks function : multiplies two polynomials, the degrees adding
-    up. The degree two part is the outer product of the degree one parts along
-    the widths, which is where the distribution the quadratic factorization
-    needs happens.
-    INPUT:  left, right -> Block objects over the same rows
-    OUTPUT: Block
-    """
-
-    nb_rows = left.nb_rows
-    valid = combine_valid(left.valid, right.valid)
-    left_constant = left.constant.values
-    right_constant = right.constant.values
-
-    if left.degree() == 0:
-        return right.scaled(left_constant, valid)
-    if right.degree() == 0:
-        return left.scaled(right_constant, valid)
-
-    assert not left.quadratic and not right.quadratic
-
-    constant = left_constant * right_constant
-    linear = []
-    if right_constant.any():
-        linear += [term.scaled(right_constant) for term in left.linear]
-    if left_constant.any():
-        linear += [term.scaled(left_constant) for term in right.linear]
-
-    quadratic = []
-    for left_term in left.linear:
-        for right_term in right.linear:
-            quadratic.append(_outer_product(left_term, right_term))
-
-    return Block(nb_rows, Term(constant), linear, quadratic, valid)
-
-
-def _outer_product(left_term: Term, right_term: Term) -> Term:
-    """
-    Every entry of one degree one term multiplied by every entry of the other.
-
-    The widths of the two are the widths of different sums, so their entries
-    are independent summands and every pair of them exists : each operand is
-    given a length one axis where the other holds a width, and the product is
-    then the plain one. The axes of the outer sums are shared, which is what
-    makes sum(x[i]*y[i] for i) the dot product.
-    """
-
-    [left_column] = left_term.columns
-    [right_column] = right_term.columns
-    nb_left = len(left_term.widths)
-    nb_right = len(right_term.widths)
-
-    def as_left(value: np.ndarray) -> np.ndarray:
-        # the widths of the right operand are new, and come after its own
-        return value.reshape(value.shape + (1,) * nb_right)
-
-    def as_right(value: np.ndarray) -> np.ndarray:
-        # the widths of the left operand are new, and come before its own,
-        # but after the common axes
-        rows = value.ndim - nb_right
-        return value.reshape(value.shape[:rows] + (1,) * nb_left + value.shape[rows:])
-
-    return Term(
-        as_left(left_term.values) * as_right(right_term.values),
-        (as_left(left_column), as_right(right_column)),
-        left_term.widths + right_term.widths,
-        as_left(left_term.filled) & as_right(right_term.filled),
-    )
+        quadratic = _build_sparse_array(
+            list(self.quadratic.values()), valid, nb_kept_rows, nb_rows
+        )
+        return constant, linear, quadratic
 
 
 def _gather_nonzero_terms(
@@ -374,11 +371,11 @@ def _gather_nonzero_terms(
 
     Terms are handled one at a time. For each term, its values are brought to
     the rows and widths they cover and reduced to the positions that are not
-    zero; the term's columns are then read only at those same positions. The
-    list is emptied as it is read, so that what a term holds is released
-    before the sparse array is built.
-    INPUT:  terms -> non empty list of Term objects, all of the same degree,
-                     emptied by the call
+    zero; the term's columns are then read only at those same positions. Each
+    term is freed once read, so that what it holds is released before the
+    sparse array is built.
+    INPUT:  terms -> non empty list of evaluated Term objects, all of the same
+                     degree, freed by the call
             valid -> ndarray, the rows to keep
             nb_rows -> number of rows the terms were evaluated at, before
                        valid narrows them down
@@ -387,17 +384,13 @@ def _gather_nonzero_terms(
     """
 
     keep_every_row = bool(valid.all())
-    row_number = None if keep_every_row else np.cumsum(valid) - 1
+    kept_row_position = None if keep_every_row else np.cumsum(valid) - 1
 
     rows = [np.zeros(0, dtype=int)]
     values = [np.zeros(0, dtype=float)]
     columns = [[np.zeros(0, dtype=int)] for _ in range(terms[0].degree())]
 
-    # popping from the end is what releases each term, and reversing first
-    # keeps the entries in the order they were written in
-    terms.reverse()
-    while terms:
-        term = terms.pop()
+    for term in terms:
         shape = (nb_rows,) + term.widths
         term_values = np.broadcast_to(term.values, shape)
 
@@ -408,19 +401,18 @@ def _gather_nonzero_terms(
             live &= valid_rows
         if not term.filled.all():
             # remove ragged terms in the width
-            valid_padding = np.broadcast_to(term.filled, shape)
-            live &= valid_padding
+            filled = np.broadcast_to(term.filled, shape)
+            live &= filled
 
         # one array per axis, the first of them being the row an entry lands on
         kept = np.nonzero(live)
-        if len(kept[0]) == 0:
-            continue
-
-        rows.append(kept[0] if keep_every_row else row_number[kept[0]])
-        values.append(term_values[kept])
-        for gathered_column, term_column in zip(columns, term.columns):
-            rectangle = np.broadcast_to(term_column, shape)[kept]
-            gathered_column.append(rectangle)
+        if len(kept[0]) > 0:
+            rows.append(kept[0] if keep_every_row else kept_row_position[kept[0]])
+            values.append(term_values[kept])
+            for gathered_column, term_column in zip(columns, term.columns):
+                entry_columns = np.broadcast_to(term_column, shape)[kept]
+                gathered_column.append(entry_columns)
+        term.free_evaluation()
 
     return (
         np.concatenate(rows),
@@ -438,7 +430,7 @@ def _build_sparse_array(
     terms, one for the degree one part and two for the degree two one. Entries
     at the same (row, *columns) tuple in more than one term are summed and
     cancelled by sum_duplicates/eliminate_zeros.
-    INPUT:  terms -> list of Term objects, all of the same degree
+    INPUT:  terms -> list of evaluated Term objects, all of the same degree
             valid -> mask over the rows of the block
             nb_kept_rows -> number of rows the mask keeps
             nb_rows -> number of rows the terms were evaluated at

@@ -123,7 +123,8 @@ class Hyperedge:
         return self.c_triplet_list
 
     def free_factors_constraints(self):
-        self.constr_factors = None
+        for factor in self.constr_factors:
+            factor.free_extension()
 
     def get_number_expanded_constraints(self):
 

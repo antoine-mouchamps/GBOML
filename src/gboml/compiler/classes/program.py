@@ -54,6 +54,10 @@ class Program:
         self.var_dict = {}
         self.link_list = []
         self.factor_links = []
+        self.expression_table = {}
+        self.parameter_values = {}
+        # the paths of the parameters turned into numbers that the symbolic expressions no longer read
+        self.parameters_fixed_at_compilation = set()
         self.dict_nodes_links = turn_to_dict(self.vector_nodes+self.links)
 
     def __str__(self):
