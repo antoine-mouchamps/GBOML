@@ -170,7 +170,7 @@ class Block:
     and its terms of degree one and two by key, no two of them sharing a key.
     """
 
-    __slots__ = ("constant", "linear", "quadratic", "kept_rows")
+    __slots__ = ("constant", "linear", "quadratic", "_kept_rows")
 
     def __init__(
         self,
@@ -194,10 +194,7 @@ class Block:
                     stored.pop(term.key, None)
                 else:
                     stored[term.key] = term
-        # the condition, over the rows, that no term reads a table or a variable outside of its entries
-        self.kept_rows = Operation(
-            "==", (Add([(term.missing_entry_count, 1) for term in self.terms]), 0)
-        )
+        self._kept_rows = None
 
     @staticmethod
     def of_constant(expression: Expr) -> "Block":
@@ -210,6 +207,16 @@ class Block:
             [Term((), (variable,), Number(1, variable.table))],
             [],
         )
+
+    @property
+    def kept_rows(self) -> Expr:
+        """The condition, over the rows, that no term reads a table or a variable outside of its entries."""
+        # built on first use, since only the block of a whole constraint or objective needs it
+        if self._kept_rows is None:
+            self._kept_rows = Operation(
+                "==", (Add([(term.missing_entry_count, 1) for term in self.terms]), 0)
+            )
+        return self._kept_rows
 
     @property
     def terms(self) -> list[Term]:
@@ -301,7 +308,7 @@ class Block:
             ],
         )
         # a term whose derivative is zero is dropped, but the rows its reads dropped stay dropped
-        derived_block.kept_rows = self.kept_rows
+        derived_block._kept_rows = self.kept_rows
         return derived_block
 
     def evaluate_over(
