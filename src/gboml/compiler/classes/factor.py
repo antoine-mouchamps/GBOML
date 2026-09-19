@@ -12,6 +12,7 @@ from .constraint import Constraint
 from .expression import Expression, Scope
 from .identifier import Identifier
 from .objective import Objective
+from .symbolic import Idx
 
 if TYPE_CHECKING:
     from .symbolic import Expr, Indexed, ParameterSymbol
@@ -174,7 +175,9 @@ def build_node(
         return VariableLeaf(scope.resolve_variable(identifier))
 
     if e_type == "sum":
-        value_range, body_scope = scope.enter_sum(expression)
+        interval = expression.get_time_interval()
+        index = Idx(("sum", interval.get_index_name()), scope.table)
+        value_range, body_scope = scope.enter_index(index, interval, expression.get_condition())
         return SumNode(build(children[0], body_scope), value_range)
 
     if e_type == "u-":
@@ -258,11 +261,8 @@ class Factorize:
         """
 
         constraint = self.obj
-        self.rows, scope = scope.enter_rows(
-            constraint.get_time_interval(),
-            constraint.get_condition(),
-            constraint.get_index_var(),
-            self.index_is_read(),
+        self.rows, scope = scope.enter_index(
+            Idx("t", scope.table), constraint.get_rows_interval(), constraint.get_condition()
         )
         left = build_node(constraint.get_lhs(), scope, self.variables)
         right = build_node(constraint.get_rhs(), scope, self.variables)
@@ -274,29 +274,12 @@ class Factorize:
         """
 
         objective = self.obj
-        self.rows, scope = scope.enter_rows(
-            objective.get_time_interval(),
-            objective.get_condition(),
-            objective.get_index_var(),
-            self.index_is_read(),
+        self.rows, scope = scope.enter_index(
+            Idx("t", scope.table), objective.get_rows_interval(), objective.get_condition()
         )
         self.block = build_node(
             objective.get_expression(), scope, self.variables
         ).factorize()
-
-    def index_is_read(self) -> bool:
-        """Whether the text or the `where` condition reads the index, which gives one row per time step."""
-        obj = self.obj
-        index_name = obj.get_index_var()
-        if self.type_fact == "constraint":
-            expressions = [obj.get_rhs(), obj.get_lhs()]
-        else:
-            expressions = [obj.get_expression()]
-        if obj.get_condition() is not None:
-            expressions.append(obj.get_condition())
-        return any(
-            expression.depends_on_index([index_name]) for expression in expressions
-        )
 
     def derivative(self, target: "ParameterSymbol | Indexed") -> Block:
         """The block with every coefficient differentiated with respect to a parameter or to one entry of a table."""

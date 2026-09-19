@@ -55,45 +55,25 @@ class Scope:
         scope.local_parameters = (parameters, element_path)
         return scope
 
-    def enter_sum(self, expression: "Expression") -> tuple[Range, "Scope"]:
-        """The range of a sum, and the scope in which its letter is bound."""
-        interval = expression.get_time_interval()
-        name = interval.get_index_name()
+    def enter_index(
+        self, index: Idx, interval, written_condition
+    ) -> tuple[Range, "Scope"]:
+        """The range an interval gives an index, and the scope in which its letter is bound."""
+        letter = interval.get_index_name()
         local_names = () if self.local_parameters is None else self.local_parameters[0]
         if (
-            name in self.definitions
-            or name in self.bound_indexes
-            or name in local_names
+            letter in self.bound_indexes
+            or letter in self.definitions
+            or letter in local_names
         ):
             error_(
                 "ERROR: index "
-                + name
+                + letter
                 + " for loop already defined. Redefinition at line "
-                + str(expression.get_line())
+                + str(interval.line)
             )
-        index = Idx(("sum", name), self.table)
-        value_range = interval.to_range(index, expression.get_condition(), self)
-        return value_range, self.with_bound_index(name, index)
-
-    def enter_rows(
-        self, interval, written_condition, index_name: str, index_is_read: bool
-    ) -> tuple[Range, "Scope"]:
-        """The rows of a constraint or an objective, and the scope in which its index is bound."""
-        index = Idx("t", self.table)
-        scope = self.with_bound_index(index_name, index)
-        if interval is not None:
-            return interval.to_range(index, written_condition, self), scope
-        last_row = (
-            self.resolve_parameter("", "T") - 1
-            if index_is_read
-            else Number(0, self.table)
-        )
-        condition = (
-            None if written_condition is None else written_condition.to_symbolic(scope)
-        )
-        return Range(
-            index, Number(0, self.table), last_row, Number(1, self.table), condition
-        ), scope
+        value_range: Range = interval.to_range(index, written_condition, self)
+        return value_range, self.with_bound_index(letter, index)
 
     def resolve_variable(self, identifier: Identifier) -> Indexed:
         """A variable read at its written index, its columns taken from its declaration."""
@@ -341,7 +321,10 @@ class Expression(Symbol):
         if self.type == "u-":
             return -self.children[0].to_symbolic(scope)
         if self.type == "sum":
-            value_range, body_scope = scope.enter_sum(self)
+            index = Idx(("sum", self.time_interval.get_index_name()), scope.table)
+            value_range, body_scope = scope.enter_index(
+                index, self.time_interval, self.condition
+            )
             return Sum(self.children[0].to_symbolic(body_scope), value_range)
 
         if self.type == "**":

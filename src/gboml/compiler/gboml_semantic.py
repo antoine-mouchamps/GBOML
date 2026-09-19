@@ -489,9 +489,6 @@ def expression_degree(program: Program, expression: Expression, variables: dict,
                    + str(nb_child) + " check internal parser")
         time_int = expression.get_time_interval()
         time_var = time_int.get_index_name()
-        if time_var in scope.definitions or time_var in scope.bound_indexes:
-            error_("ERROR: index " + time_var + " for loop already defined. Redefinition at line "
-                   + str(expression.get_line()))
         body_scope = scope.with_bound_index(time_var, Idx(("sum", time_var), scope.table))
 
         degree = expression_degree(program, children[0], variables, body_scope)
@@ -628,6 +625,10 @@ def check_definition_link(link: Hyperedge, variables_dict: dict,
                    + " is already used to define parameter "
                    + str(parameters_dict[link_name][index_var]))
 
+        elif index_var in parameters_dict:
+            error_("ERROR: index " + index_var + " for loop already defined. Redefinition at line "
+                   + str(constraint.get_line()))
+
         # a `for` range may only read parameters, never an index or a variable
         time_interval = constraint.get_time_interval()
         if time_interval is not None:
@@ -716,6 +717,10 @@ def check_definition(node: Node, variables_dict: dict,
                    + " is already used to define parameter "
                    + str(variables_dict[node_name][index_var]))
 
+        elif index_var in parameters_dict:
+            error_("ERROR: index " + index_var + " for loop already defined. Redefinition at line "
+                   + str(constraint.get_line()))
+
         # a `for` range may only read parameters, never an index or a variable
         time_interval = constraint.get_time_interval()
         if time_interval is not None:
@@ -770,6 +775,10 @@ def check_definition(node: Node, variables_dict: dict,
                    + str(objective.get_line())
                    + " is already used to define parameter "
                    + str(variables_dict[node_name][index_var]))
+
+        elif index_var in parameters_dict:
+            error_("ERROR: index " + index_var + " for loop already defined. Redefinition at line "
+                   + str(objective.get_line()))
 
         # a `for` range may only read parameters, never an index or a variable
         time_interval = objective.get_time_interval()
@@ -930,18 +939,11 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
             sum_children = sum_expr.get_children()
             time_interval = sum_expr.get_time_interval()
             index_name = time_interval.get_index_name()
-
-            if in_node_name in variables_dict and \
-                    index_name in variables_dict[in_node_name]:
-                error_("ERROR: Redefinition of variable name by index "
-                       + str(index_name) +
-                       " at line " + str(leaf.get_line()))
-
-            if in_node_name in parameters_dict and \
-                    index_name in parameters_dict[in_node_name]:
-                error_("ERROR: Redefinition of parameter name by index "
-                       + str(index_name) +
-                       " at line " + str(leaf.get_line()))
+            if index_name in reserved or index_name in parameters_dict \
+                    or index_name in parameters_dict.get(in_node_name_parameter, {}) \
+                    or index_name in variables_dict.get(in_node_name_variable, {}):
+                error_("ERROR: index " + index_name + " for loop already defined. Redefinition at line "
+                       + str(leaf.get_line()))
 
             for bound in time_interval.get_interval():
                 check_definition_expression(

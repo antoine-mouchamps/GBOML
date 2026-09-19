@@ -535,6 +535,28 @@ class BehaviourChangeTests(unittest.TestCase):
         result, _ = compile_model(model_text("c : x[t]**p + y[t] <= 3;", "p = 0;"))
         np.testing.assert_array_equal(result[5], [2.0, 2.0, 2.0])
 
+    def test_a_sum_letter_naming_a_parameter_or_a_variable_is_refused_in_a_constraint(self):
+        cases = {
+            "c : x[t] <= sum(y[p] for p in [0:1]);": "index p for loop already defined",
+            "c : x[t] <= sum(p for y in [0:1]);": "index y for loop already defined",
+        }
+        for constraint, message in cases.items():
+            with self.subTest(constraint=constraint):
+                assert_refused_with(self, model_text(constraint, "p = 1;"), message)
+
+    def test_a_for_letter_naming_the_time_horizon_or_an_element_is_refused(self):
+        for letter in ("T", "A"):
+            with self.subTest(letter=letter):
+                constraint = f"c : x[0] >= 0 for {letter} in [0:1];"
+                assert_refused_with(self, model_text(constraint), f"index {letter} for loop already defined")
+
+
+def assert_refused_with(test: unittest.TestCase, text: str, message: str) -> None:
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed), test.assertRaises(SystemExit):
+        compile_gboml(write_model(text))
+    test.assertIn(message, printed.getvalue())
+
 
 class ParameterEvaluationTests(unittest.TestCase):
     """Parameters are evaluated with the symbolic expressions the constraints are built from."""
@@ -588,6 +610,17 @@ class ParameterEvaluationTests(unittest.TestCase):
                     "s = sum(p[i] for i in [0:2]);\np = {1, 2, 3};\ni = 4;",
                 )
             )
+
+    def test_a_nested_sum_reusing_a_letter_is_refused_in_a_parameter(self):
+        assert_refused_with(
+            self,
+            model_text("c : x[t] <= s;", "s = sum(sum(i for i in [0:1]) for i in [0:2]);"),
+            "index i for loop already defined",
+        )
+
+    def test_a_sum_letter_naming_an_element_is_refused_in_the_size_of_a_variable(self):
+        text = model_text("c : x[t] <= 1;").replace("internal : y[T];", "internal : y[sum(1 for A in [0:1])];")
+        assert_refused_with(self, text, "index A for loop already defined")
 
     def test_every_parameter_keeps_its_value(self):
         result, _ = compile_model(

@@ -5,6 +5,7 @@
 
 from gboml.compiler.utils import error_
 from .expression import Expression
+from .identifier import Identifier
 from .symbolic import Number, Range
 
 
@@ -67,9 +68,21 @@ class TimeInterval:
     - a step expression or int if not defined
     """
 
-    def __init__(self, time_var: str, begin: Expression,
-                 end: Expression, step, line: int):
+    def __init__(self, time_var: str, begin: Expression | None = None,
+                 end: Expression | None = None, step=1, line: int = 0,
+                 explicit: bool = True):
+        """A `for` over [begin:step:end], written in the model unless not `explicit`; a bound left out is that of the time horizon, [0:T-1]."""
 
+        # `t` names the index of a constraint without `for`, so only an implicit `for` can use it
+        if explicit and time_var == "t":
+            error_("ERROR: t is a reserved keyword "
+                   "and can not be overwritten at line " + str(line))
+        if begin is None:
+            begin = Expression("literal", 0, line)
+        if end is None:
+            end = Expression("-", line=line)
+            end.set_children([Expression("literal", Identifier("basic", "T", line=line), line),
+                              Expression("literal", 1, line)])
         assert type(time_var) == str, \
             "Internal error: expected string for TimeInterval identifier"
         assert type(begin) == Expression, \
@@ -79,9 +92,7 @@ class TimeInterval:
         assert type(step) == Expression or type(step) == int, \
             "Internal error: unknown type for step in TimeInterval object"
         self.name = time_var
-        if time_var == "t":
-            error_("ERROR: t is a reserved keyword "
-                   "and can not be overwritten at line " + str(line))
+        self.explicit = explicit
 
         self.begin = begin
         if type(step) == int:
@@ -96,7 +107,7 @@ class TimeInterval:
     def __copy__(self):
 
         time_int = TimeInterval(self.name, self.begin,
-                                self.end, self.step, self.line)
+                                self.end, self.step, self.line, self.explicit)
 
         return time_int
 

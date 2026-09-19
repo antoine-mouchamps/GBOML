@@ -5,6 +5,7 @@
 
 from .parent import Type
 from .expression import Expression
+from .time_obj import TimeInterval
 
 
 class Objective(Type):
@@ -47,8 +48,21 @@ class Objective(Type):
         if self.time_interval is not None:
 
             var_name = self.time_interval.get_index_name()
-        
+
         return var_name
+
+    def reads_index(self) -> bool:
+        """Whether the expression or the `where` condition reads the index."""
+        written = [self.expression] + ([self.condition] if self.condition is not None else [])
+        return any(part.depends_on_index([self.get_index_var()]) for part in written)
+
+    def get_rows_interval(self) -> TimeInterval:
+        """The written `for`, or the one implied: every time step when the index is read, else one step."""
+        if self.time_interval is not None:
+            return self.time_interval
+        if self.reads_index():
+            return TimeInterval("t", line=self.line, explicit=False)
+        return TimeInterval("t", end=Expression("literal", 0, self.line), line=self.line, explicit=False)
 
     def get_condition(self):
 
