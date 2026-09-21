@@ -17,7 +17,7 @@ from .compiler import (
 )
 from .compiler.classes import Parameter, Expression, Node, Hyperedge, Time, \
     Program, Factorize
-from .compiler.classes.symbolic import Expr, Indexed, Number, ParameterSymbol
+from .compiler.classes.symbolic import Expr, Idx, Indexed, Number, ParameterSymbol
 from .compiler.gboml_matrix_generation import get_flat_nodes_edges_ordered
 from .compiler.utils import error_, move_to_directory
 from .solver_api import (
@@ -270,14 +270,17 @@ class GbomlGraph:
         self.quadratic_ineq = quadratic_ineq
         self.quadratic_objective = quadratic_objective
 
-    def parameter(self, path: str) -> ParameterSymbol:
-        """The symbol of a parameter of the built model, such as "NODE.name", to build the expressions `replace_parameter` takes."""
+    def parameter(self, path: str) -> Expr:
+        """A parameter of the built model, such as "NODE.name", read at the index `entry` for a table, to build the expressions `replace_parameter` takes."""
         self.__check_parameter_has_symbol(path)
-        return ParameterSymbol(
+        symbol = ParameterSymbol(
             path, np.shape(self.program.parameter_values[path]), self.program.expression_table
         )
+        if symbol.ndim == 0:
+            return symbol
+        return Indexed(symbol, (Idx("entry", self.program.expression_table),))
 
-    def add_parameter(self, path: str, value: float | list[float]) -> ParameterSymbol:
+    def add_parameter(self, path: str, value: float | list[float]) -> Expr:
         """Gives a value to a new parameter of a node or a hyperedge of the built model, and returns its symbol."""
         self.__check_model_is_built()
         element_path, _, name = path.rpartition(".")
@@ -300,7 +303,10 @@ class GbomlGraph:
 
     def replace_parameter(self, path: str, expression: Expr) -> None:
         """Replaces every read of a parameter of the built model by an expression of its parameters, which may read that parameter too."""
-        parameter = self.parameter(path)
+        self.__check_parameter_has_symbol(path)
+        parameter = ParameterSymbol(
+            path, np.shape(self.program.parameter_values[path]), self.program.expression_table
+        )
         self.__check_not_fixed_at_compilation(path)
         if not isinstance(expression, Expr):
             error_(
@@ -380,7 +386,10 @@ class GbomlGraph:
         """The parameter, or the entry of a table, that `path` names."""
         entry_match = re.fullmatch(r"(.+)\[(\d+)\]", path)
         parameter_path = path if entry_match is None else entry_match.group(1)
-        parameter = self.parameter(parameter_path)
+        self.__check_parameter_has_symbol(parameter_path)
+        parameter = ParameterSymbol(
+            parameter_path, np.shape(self.program.parameter_values[parameter_path]), self.program.expression_table
+        )
         self.__check_not_fixed_at_compilation(parameter_path)
         if entry_match is None:
             if parameter.ndim > 0:

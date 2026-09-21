@@ -100,14 +100,12 @@ class Scope:
             return self.bound_indexes[name]
         parameter = self.resolve_parameter(node_name, name, identifier.get_line())
         index = identifier.get_expression()
-        return (
-            parameter
-            if index is None
-            else parameter.read_at((index.to_symbolic(self),))
-        )
+        if index is None:
+            return parameter
+        return parameter.replace({Idx("entry", self.table): index.to_symbolic(self)})
 
     def resolve_parameter(self, node_name: str, name: str, line: int = 0) -> Expr:
-        """The expression a parameter stands for: its definition when that reads other parameters, else a symbol whose value is recorded."""
+        """The expression a parameter stands for, a table being read at the index `entry`: its definition when that reads other parameters, else a symbol whose value is recorded."""
         parameters, element_path = self.locate_parameter(node_name, name, line)
         path = element_path + "." + name if element_path else name
         parameter = parameters[name]
@@ -132,7 +130,7 @@ class Scope:
             definition = (
                 np.array(numbers, dtype=float)
                 if len(numbers) == len(entries)
-                else Array(entries)
+                else Indexed(Array(entries), (Idx("entry", self.table),))
             )
         self.parameters_in_translation.remove(path)
         if isinstance(definition, Number):
@@ -140,7 +138,8 @@ class Scope:
         if isinstance(definition, Expr):
             return definition
         self.parameter_values[path] = definition
-        return ParameterSymbol(path, np.shape(definition), self.table)
+        symbol = ParameterSymbol(path, np.shape(definition), self.table)
+        return symbol if symbol.ndim == 0 else Indexed(symbol, (Idx("entry", self.table),))
 
     def locate_parameter(
         self, node_name: str, name: str, line: int

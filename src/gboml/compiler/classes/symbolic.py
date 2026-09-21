@@ -217,14 +217,10 @@ class Expr:
         """The number this expression is scaled by, and the factors of the rest with their exponents."""
         return 1, ((self, 1),)
 
-    def read_at(self, indexes: tuple["Expr", ...]) -> "Expr":
-        """A table valued expression read at `indexes`, the read moved onto every table it is built from."""
-        return self
-
     def replace(self, replacements: dict["Idx | ParameterSymbol", "Expr"]) -> "Expr":
         """The expression with every index or parameter of `replacements` replaced, a letter bound by a sum included."""
         for name, replacement in replacements.items():
-            if replacement.value_shape() != name.value_shape():
+            if isinstance(name, ParameterSymbol) and replacement.value_shape() != name.value_shape():
                 error_(
                     "ERROR: "
                     + repr(name)
@@ -309,12 +305,11 @@ class Expr:
         error_("INTERNAL ERROR: " + repr(self) + " can not be evaluated")
 
     def value_shape(self, line: int = 0) -> tuple[int, ...]:
-        """The shape of the value of this expression, `()` for a number."""
+        """The shape of the value of this expression: `()` for a number, the length of the tables it reads at `entry` for a table."""
         entry = Idx("entry", self.table)
-        read = self.read_at((entry,))
-        if read is self:
+        if entry not in self.free_indexes:
             return ()
-        lengths = _lengths_read_at(read, entry)
+        lengths = _lengths_read_at(self, entry)
         if len(lengths) != 1:
             error_(
                 "ERROR: tables of different lengths are combined entry by entry"
@@ -325,13 +320,13 @@ class Expr:
     def evalf(
         self, parameter_values: dict[str, float | np.ndarray], line: int = 0
     ) -> float | np.ndarray:
-        """The value of this expression, which reads no index: a number, or a table when it reads a whole table."""
-        if self.free_indexes:
+        """The value of this expression, which reads no index but `entry`: a number, or a table when it reads `entry`."""
+        entry = Idx("entry", self.table)
+        is_table = entry in self.free_indexes
+        if self.free_indexes - {entry}:
             error_("INTERNAL ERROR: " + repr(self) + " reads an index, so it has no value")
         check_parameter_values(self.parameters_read, parameter_values)
-        entry = Idx("entry", self.table)
-        read = self.read_at((entry,))
-        if read is self:
+        if not is_table:
             context = Context(parameter_values, (), {}, {}, line=line)
         else:
             [length] = self.value_shape(line)
@@ -349,10 +344,10 @@ class Expr:
                 ranges=(entries,),
                 line=line,
             )
-        if np.any(read.missing_entry_count.evaluate_over(context)):
+        if np.any(self.missing_entry_count.evaluate_over(context)):
             error_("ERROR: a table is read outside of its entries at line " + str(line))
-        values = read.evaluate_over(context)
-        if read is self:
+        values = self.evaluate_over(context)
+        if not is_table:
             return float(values)
         return np.broadcast_to(values, context.shape).astype(float)
 
@@ -459,8 +454,8 @@ class ParameterSymbol(Atom):
     def parameters_read(self) -> frozenset["ParameterSymbol"]:
         return frozenset((self,))
 
-    def read_at(self, indexes: tuple[Expr, ...]) -> Expr:
-        return Indexed(self, indexes) if self.ndim > 0 else self
+    def value_shape(self, line: int = 0) -> tuple[int, ...]:
+        return self.shape
 
     def _derivative(self, target: "ParameterSymbol | Indexed") -> Expr:
         if self == target:
@@ -492,9 +487,6 @@ class VariableSymbol(Atom):
     def length(self) -> int:
         return self.size
 
-    def read_at(self, indexes: tuple[Expr, ...]) -> Expr:
-        return Indexed(self, indexes)
-
     def entry_values(self, context: Context) -> np.ndarray:
         """The columns of the entries of this variable."""
         return self.first_column + np.arange(self.size)
@@ -521,14 +513,18 @@ class Indexed(Composite):
         return (self.base, *self.indexes)
 
     def _replace(self, visit: Callable[[Expr], Expr]) -> Expr:
-        return visit(self.base).read_at(tuple(map(visit, self.indexes)))
+        base, indexes = visit(self.base), tuple(map(visit, self.indexes))
+        if isinstance(base, (VariableSymbol, ParameterSymbol, Array)):
+            return Indexed(base, indexes)
+        # a table replaced by an expression of its entry is read at the position of this read
+        return base.replace({Idx("entry", self.table): indexes[0]})
 
     def _derivative(self, target: "ParameterSymbol | Indexed") -> Expr:
         for index in self.indexes:
             index.check_does_not_read(target)
         if isinstance(self.base, Array):
             entries = tuple(entry.derivative(target) for entry in self.base.entries)
-            return Array(entries).read_at(self.indexes)
+            return Indexed(Array(entries), self.indexes)
         if isinstance(target, Indexed) and target.base == self.base:
             # the read is the target entry only where its position is the position of the target
             return Operation("==", (self.indexes[0], target.indexes[0]))
@@ -570,7 +566,7 @@ class Array(Composite):
     def __new__(cls, entries: tuple[Expr, ...]) -> "Array":
         table = entries[0].table
         probe = Idx("entry", table)
-        if any(entry.read_at((probe,)) is not entry for entry in entries):
+        if any(probe in entry.free_indexes for entry in entries):
             error_(
                 "ERROR: the table {"
                 + ", ".join(map(repr, entries))
@@ -585,9 +581,6 @@ class Array(Composite):
     @property
     def length(self) -> int:
         return len(self.entries)
-
-    def read_at(self, indexes: tuple[Expr, ...]) -> Expr:
-        return Indexed(self, indexes)
 
     def _replace(self, visit: Callable[[Expr], Expr]) -> Expr:
         return Array(tuple(map(visit, self.entries)))
@@ -647,12 +640,6 @@ class Add(Composite):
             [(term, coefficient)] = self.terms
             return coefficient, term.as_coeff_mul()[1]
         return super().as_coeff_mul()
-
-    def read_at(self, indexes: tuple[Expr, ...]) -> Expr:
-        return Add(
-            [(term.read_at(indexes), coefficient) for term, coefficient in self.terms],
-            self.constant,
-        )
 
     def _replace(self, visit: Callable[[Expr], Expr]) -> Expr:
         return Add(
@@ -724,11 +711,6 @@ class Mul(Composite):
     def as_coeff_mul(self) -> tuple[float, tuple[tuple[Expr, int], ...]]:
         return 1, self.factors
 
-    def read_at(self, indexes: tuple[Expr, ...]) -> Expr:
-        return Mul(
-            [(factor.read_at(indexes), exponent) for factor, exponent in self.factors]
-        )
-
     def _replace(self, visit: Callable[[Expr], Expr]) -> Expr:
         return Mul([(visit(factor), exponent) for factor, exponent in self.factors])
 
@@ -781,11 +763,6 @@ class Operation(Composite):
     @property
     def args(self) -> tuple[Expr, ...]:
         return self.operands
-
-    def read_at(self, indexes: tuple[Expr, ...]) -> Expr:
-        return Operation(
-            self.operator, tuple(operand.read_at(indexes) for operand in self.operands)
-        )
 
     def _replace(self, visit: Callable[[Expr], Expr]) -> Expr:
         return Operation(self.operator, tuple(map(visit, self.operands)))
