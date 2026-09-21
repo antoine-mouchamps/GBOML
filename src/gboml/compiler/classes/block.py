@@ -3,6 +3,7 @@
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
 from collections.abc import Iterable
+import math
 
 import numpy as np  # type: ignore
 from scipy.sparse import coo_array  # type: ignore
@@ -384,9 +385,11 @@ def _gather_nonzero_terms(
 
     Terms are handled one at a time. For each term, its values are brought to
     the rows and widths they cover and reduced to the positions that are not
-    zero; the term's columns are then read only at those same positions. Each
-    term is freed once read, so that what it holds is released before the
-    sparse array is built.
+    zero; the term's columns are then read only at those same positions, and
+    the term is freed once read. The final arrays are allocated once, at the
+    total number of cells every term could contribute, and each term writes
+    its entries into its own slice; the arrays are then trimmed to what was
+    actually written.
     INPUT:  terms -> non empty list of evaluated Term objects, all of the same
                      degree, freed by the call
             valid -> ndarray, the rows to keep
@@ -399,38 +402,59 @@ def _gather_nonzero_terms(
     keep_every_row = bool(valid.all())
     kept_row_position = None if keep_every_row else np.cumsum(valid) - 1
 
-    rows = [np.zeros(0, dtype=int)]
-    values = [np.zeros(0, dtype=float)]
-    columns = [[np.zeros(0, dtype=int)] for _ in range(terms[0].degree())]
+    upper_bound = sum(nb_rows * math.prod(term.widths) for term in terms)
+    rows = np.empty(upper_bound, dtype=int)
+    values = np.empty(upper_bound, dtype=float)
+    columns = tuple(np.empty(upper_bound, dtype=int) for _ in range(terms[0].degree()))
+    written = 0
+    row_range = np.arange(nb_rows)
 
     for term in terms:
         shape = (nb_rows,) + term.widths
         term_values = np.broadcast_to(term.values, shape)
-
+        fully_filled = term.filled.all()
         live = term_values != 0.0
-        if not keep_every_row:
-            # remove rows that should be excluded
-            valid_rows = valid.reshape((nb_rows,) + (1,) * len(term.widths))
-            live &= valid_rows
-        if not term.filled.all():
-            # remove ragged terms in the width
-            filled = np.broadcast_to(term.filled, shape)
-            live &= filled
+        if keep_every_row and fully_filled and live.all():
+            # every cell is a real, kept entry: ravel instead of masking
+            row_indices = np.broadcast_to(
+                row_range.reshape((nb_rows,) + (1,) * len(term.widths)),
+                shape,
+            ).ravel()
+            entry_values = term_values.ravel()
+            entry_columns = [
+                np.broadcast_to(term_column, shape).ravel()
+                for term_column in term.columns
+            ]
+        else:
+            if not keep_every_row:
+                # remove rows that should be excluded
+                live &= valid.reshape((nb_rows,) + (1,) * len(term.widths))
+            if not fully_filled:
+                # remove ragged terms in the width
+                live &= np.broadcast_to(term.filled, shape)
 
-        # one array per axis, the first of them being the row an entry lands on
-        kept = np.nonzero(live)
-        if len(kept[0]) > 0:
-            rows.append(kept[0] if keep_every_row else kept_row_position[kept[0]])
-            values.append(term_values[kept])
-            for gathered_column, term_column in zip(columns, term.columns):
-                entry_columns = np.broadcast_to(term_column, shape)[kept]
-                gathered_column.append(entry_columns)
+            kept = np.nonzero(live)
+            row_indices = kept[0] if keep_every_row else kept_row_position[kept[0]]
+            entry_values = term_values[kept]
+            entry_columns = [
+                np.broadcast_to(term_column, shape)[kept]
+                for term_column in term.columns
+            ]
+
+        count = len(row_indices)
+        if count > 0:
+            end = written + count
+            rows[written:end] = row_indices
+            values[written:end] = entry_values
+            for gathered_column, entry_column in zip(columns, entry_columns):
+                gathered_column[written:end] = entry_column
+            written = end
         term.free_evaluation()
 
     return (
-        np.concatenate(rows),
-        np.concatenate(values),
-        *(np.concatenate(column) for column in columns),
+        rows[:written],
+        values[:written],
+        *(column[:written] for column in columns),
     )
 
 
@@ -468,7 +492,11 @@ def _build_sparse_array(
         int(column.max(initial=0)) + 1 for column in columns
     )
     sparse = coo_array((values, (term_rows, *columns)), shape=shape)
-    sparse.sum_duplicates()  # TODO: keep it or no ??
-    sparse.eliminate_zeros()
+    if degree == 2:
+        # a degree one row is consolidated by the solver's own tocsr/tocsc
+        # conversion; a degree two row is read raw before that, by
+        # _split_rows_by_degree, so cancelling terms must be merged here.
+        sparse.sum_duplicates()
+        sparse.eliminate_zeros()
 
     return sparse
