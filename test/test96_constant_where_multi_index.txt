@@ -1,0 +1,23 @@
+// A constant `where` that is false, on a MULTI-INDEX variable carrying a
+// `for`. test58 covers the same thing on a variable of one axis, where the
+// row set is emptied cleanly. Here it raises "a variable goes out of bounds".
+#TIMEHORIZON
+T = 3;
+#INDEXES
+N = 2;
+
+#NODE A
+#PARAMETERS
+on    = 0;
+k_out = 1;
+#VARIABLES
+internal : f[k_out][T];
+internal : d[T][N];
+internal : y[k_out][T][N];
+#CONSTRAINTS
+f_def : f[o][t] == 0.5 for o in [0:k_out-1];
+d_def : d[t][n] == 2;
+q : y[o][t][n] == d[t][n] for o in [0:k_out-1] where on > 0;
+y_pin : y[o][t][n] == 0 for o in [0:k_out-1] where on == 0;
+#OBJECTIVES
+min z : y[0][t][0];

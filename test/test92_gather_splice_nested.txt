@@ -1,0 +1,28 @@
+#TIMEHORIZON T = 2;
+
+#INDEXES
+N = 2;
+
+// the spliced member gathers variables of its own, so its blocks are already
+// one per slot and only its depth is read against a slot rather than itself
+#NODE A
+    #NODE P
+        #NODE Q
+            #VARIABLES
+                internal : a[T][N];
+            #CONSTRAINTS
+                a[t][n] == 1;
+        #NODE R
+            #VARIABLES
+                internal : b[T][N];
+            #CONSTRAINTS
+                b[t][n] == 2;
+        #VARIABLES
+            internal : prod[2][T][N] <- {Q.a[T][N], R.b[T][N]};
+            internal : waste[T][N];
+        #CONSTRAINTS
+            waste[t][n] == 9;
+    #VARIABLES
+        internal : out[3][T][N] <- {P.prod[2][T][N], P.waste[T][N]};
+    #OBJECTIVES
+        min : out[0][t][n];

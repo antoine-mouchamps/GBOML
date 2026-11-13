@@ -1,0 +1,11 @@
+#TIMEHORIZON
+T = 3;
+#INDEXES
+N = 5;
+#NODE A
+#VARIABLES
+internal sizing : x[T];
+#CONSTRAINTS
+c : x[n] == 1;
+#OBJECTIVES
+min : x[0];

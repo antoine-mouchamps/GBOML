@@ -31,17 +31,19 @@ def flatten_definitions_and_get_values(definitions):
     flatten_dict = {}
     for key, value in definitions.items():
         if isinstance(value, dict):
-            for sub_key, sub_param in value.items():
-                flatten_key = key+"."+sub_key
-                if sub_param.get_type() == "expression":
-                    flatten_dict[flatten_key] = sub_param.get_value()[0]
-                else:
-                    flatten_dict[flatten_key] = np.array(sub_param.get_value())
+            parameters = {key + "." + sub_key: sub_param
+                          for sub_key, sub_param in value.items()}
         else:
-            if value.get_type() == "expression":
-                flatten_dict[key] = value.get_value()[0]
+            parameters = {key: value}
+
+        for name, parameter in parameters.items():
+            if parameter.get_type() == "expression":
+                flatten_dict[name] = parameter.get_value()[0]
             else:
-                flatten_dict[key] = np.array(value.get_value())
+                values = np.array(parameter.get_value())
+                shape = parameter.get_shape()
+                flatten_dict[name] = \
+                    values.reshape(shape) if shape else values
     return flatten_dict
 
 
@@ -113,7 +115,8 @@ def extend_factor_on_multiple_processes(root: Program,
     nodes = root.get_nodes()
     hyperlinks = root.get_links()
     all_tuples = []
-    accumulator_dict = {"global": definitions["global"], "T": definitions["T"]}
+    accumulator_dict = {"global": definitions["global"],
+                        **root.get_index_table()}
     node_definition_tuples, edge_definition_tuples = \
         get_flat_nodes_edges_and_definition(nodes, hyperlinks, definitions,
                                             accumulator_dict)
@@ -146,7 +149,8 @@ def extend_factor_on_multiple_processes(root: Program,
 def extend_factor(root: Program, definitions) -> None:
     nodes = root.get_nodes()
     hyperlinks = root.get_links()
-    accumulator_dict = {"global": definitions["global"], "T": definitions["T"]}
+    accumulator_dict = {"global": definitions["global"],
+                        **root.get_index_table()}
     node_definition_tuples, edge_definition_tuples = \
         get_flat_nodes_edges_and_definition(nodes, hyperlinks, definitions,
                                             accumulator_dict)

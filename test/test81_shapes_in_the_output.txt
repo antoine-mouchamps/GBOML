@@ -1,0 +1,26 @@
+// A variable or a parameter over several axes is emitted flat, so the shape
+// travels beside it. One axis needs none, the length of the list being the
+// whole story, which is what keeps every file written before the indexes
+// byte for byte what it was.
+#TIMEHORIZON
+T = 2;
+#GLOBAL
+flat = 7;
+vec = {1, 2, 3};
+#INDEXES
+N = 3;
+
+#NODE A
+#PARAMETERS
+grid[T][N] = {1, 2, 3, 4, 5, 6};
+row[N] = {10, 20, 30};
+#VARIABLES
+internal : x[T][N];
+internal : v[N];
+internal : z;
+#CONSTRAINTS
+two_axes : x[t][n] == grid[t][n];
+one_axis : v[n] == row[n];
+scalar   : z == global.flat;
+#OBJECTIVES
+min : z;

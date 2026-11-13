@@ -3,9 +3,24 @@
 # University of Liege .
 # Licensed under the MIT License (see LICENSE file).
 
+import numpy as np  # type: ignore
+
 from .parent import Symbol
 from .identifier import Identifier
 from .error import RedefinitionError
+
+
+def identifiers_of_gathered(gathered):
+    """Every identifier an assignment names, however deeply it is nested."""
+
+    if gathered is None:
+        return
+
+    if isinstance(gathered, list):
+        for member in gathered:
+            yield from identifiers_of_gathered(member)
+    else:
+        yield gathered
 
 
 class Variable(Symbol):
@@ -13,6 +28,10 @@ class Variable(Symbol):
     Variable object is composed of: 
     - a type 
     - an Identifier object
+
+    Its columns are consecutive from the identifier's index. One gathering
+    other variables instead holds one block per gathered variable, listed in
+    `block_first_columns` and picked by the `nb_block_indexes` first indexes.
     """
 
     def __init__(self, identifier: Identifier,
@@ -33,6 +52,8 @@ class Variable(Symbol):
         self.dynamics = None
         self.assignment = None
         self.child_variable = child_variable
+        self.block_first_columns = None
+        self.nb_block_indexes = 0
 
     def __str__(self):
         string = "[" + str(self.name) + ' , ' + str(self.type)
@@ -100,6 +121,32 @@ class Variable(Symbol):
     def get_size(self):
         return self.name.get_size()
 
+    def get_shape(self):
+        return self.name.get_shape()
+
+    def set_blocks(self, block_first_columns, nb_block_indexes):
+        self.block_first_columns = block_first_columns
+        self.nb_block_indexes = nb_block_indexes
+
+    def get_block_first_columns(self):
+        return self.block_first_columns
+
+    def get_nb_block_indexes(self):
+        return self.nb_block_indexes
+
+    def get_columns(self):
+        """Where the variable sits, one slice when it is a single block."""
+
+        if self.block_first_columns is None:
+            index = self.name.get_index()
+
+            return slice(index, index + self.get_size())
+
+        block_size = self.get_size() // len(self.block_first_columns)
+
+        return (self.block_first_columns[:, None]
+                + np.arange(block_size)).ravel()
+
     def get_identifier(self):
         return self.get_name()
 
@@ -108,14 +155,14 @@ class Variable(Symbol):
             "Internal error: unknown variable type"
         self.type = vtype
 
+    def gathered_identifiers(self):
+        return identifiers_of_gathered(self.child_variable)
+
     def rename_inside_expressions(self, new_name, old_name):
         identifier = self.get_identifier()
-        expr = identifier.get_expression()
-        if expr is not None:
+        for expr in identifier.get_expressions():
             expr.rename_node_inside(new_name, old_name)
 
-        identifier_child = self.get_child_assignment()
-        if identifier_child is not None:
-            expr = identifier_child.get_expression()
-            if expr is not None:
+        for gathered in self.gathered_identifiers():
+            for expr in gathered.get_expressions():
                 expr.rename_node_inside(new_name, old_name)

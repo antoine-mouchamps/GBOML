@@ -10,9 +10,10 @@ import os
 
 class Parameter(Symbol): 
     """
-    Parameter object is composed of: 
-    - a name 
+    Parameter object is composed of:
+    - a name
     - a right handside expression or several expression
+    - one extent expression per axis, empty when written without brackets
     """
 
     def __init__(self, name: str, expression, line=0):
@@ -20,6 +21,8 @@ class Parameter(Symbol):
         self.vector = None
         self.read_from_file = False
         self.value = None
+        self.shape_expressions = ()
+        self.shape = ()
         if expression is None:
 
             type_para = "table"
@@ -49,25 +52,34 @@ class Parameter(Symbol):
     def get_value(self):
         return self.value
 
+    def get_extent(self):
+        """
+        The single whole number the parameter holds, None when it holds
+        anything else.
+        """
+
+        value = self.value
+        if isinstance(value, (list, tuple)):
+            if len(value) != 1:
+                return None
+            value = value[0]
+        if not isinstance(value, (int, float)) or value != int(value):
+            return None
+
+        return int(value)
+
     def set_value(self, value):
         if len(value) >= 2 and isinstance(value, list):
             self.type = "table"
         self.value = value
 
     def get_values_from_file(self, expression):
-        # from .expression import Expression
         """
-        from numpy import genfromtxt, nan
-        self.read_from_file = True
-        if (os.path.isfile('./' + expression)) is False:
-            error_("No such file as " + str(expression))
-        value = genfromtxt('./'+expression, delimiter=',;\n ')
-        if value[-1] == nan:
-            value = value[:-1]
-
-        self.value = value
-        self.vector = value
-
+        get_values_from_file function : reads a file of numbers into one
+        flat list, in the order they are written. A comma, a semicolon, a
+        space and a newline all separate two values.
+        INPUT:  expression -> the file name
+        OUTPUT: None
         """
         self.read_from_file = True
         self.vector = []
@@ -98,6 +110,22 @@ class Parameter(Symbol):
             f.close()
             self.value = self.vector
 
+
+    def set_shape_expressions(self, expressions):
+
+        self.shape_expressions = tuple(expressions)
+
+    def get_shape_expressions(self):
+
+        return self.shape_expressions
+
+    def set_shape(self, shape):
+
+        self.shape = shape
+
+    def get_shape(self):
+
+        return self.shape
 
     def get_expression(self):
         

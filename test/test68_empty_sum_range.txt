@@ -1,0 +1,23 @@
+// A sum whose range is empty on some rows counts as zero there, rather than
+// refusing the whole model. y reads one index and z two, because a `where`
+// really drops rows over one axis and only masks them over several, so the
+// empty range at t = 0 is reached either way.
+#TIMEHORIZON
+T = 3;
+
+#INDEXES
+N = 2;
+
+#NODE A
+#PARAMETERS
+w[N] = {1, 10};
+#VARIABLES
+internal : x[T];
+internal : y[T];
+internal : z[T][N];
+#CONSTRAINTS
+fix    : x[t] == t + 1;
+run    : y[t] == sum(x[i] for i in [0:t-1]);
+run_2d : z[t][n] == w[n] * sum(x[i] for i in [0:t-1]);
+#OBJECTIVES
+min : y[T-1];

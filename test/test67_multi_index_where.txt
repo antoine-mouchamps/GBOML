@@ -1,0 +1,17 @@
+// A `where` reading two declared indexes. Over a single axis the values the
+// condition rejects are really dropped, but over several axes there is no
+// rectangle left to drop from, so the condition travels as a mask over the
+// rows and joins the rows a variable out of range already invalidates. Only
+// the pairs where t equals n are kept, three rows out of the twelve the two
+// indexes make.
+#TIMEHORIZON
+T = 3;
+#INDEXES
+N = 4;
+#NODE A
+#VARIABLES
+internal : x[T][N];
+#CONSTRAINTS
+diagonal : x[t][n] <= 1 where t == n;
+#OBJECTIVES
+min : x[0][0];

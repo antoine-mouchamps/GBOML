@@ -1,0 +1,21 @@
+// A stepped range on the rows of a constraint, which nothing in the suite used
+// to cover. The step is the *middle* expression of [begin:step:end], so
+// [0:2:N-1] runs 0, 2, 4 and [1:2:N-1] runs 1, 3, 5 : the two constraints
+// between them pin every entry of x, and each one to a different value, so a
+// step read in the wrong position or a range bound off by one comes out as a
+// wrong number rather than as a missing row.
+#TIMEHORIZON
+T = 1;
+
+#NODE A
+#PARAMETERS
+N = 6;
+#VARIABLES
+internal : x[N];
+#CONSTRAINTS
+even : x[i] == 10 + i for i in [0:2:N-1];
+odd  : x[i] == 20 + i for i in [1:2:N-1];
+// a singleton range, where begin and end meet
+one  : x[i] >= 0 for i in [3:3];
+#OBJECTIVES
+min c : x[i] for i in [0:N-1];

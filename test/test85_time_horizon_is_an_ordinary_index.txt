@@ -1,0 +1,21 @@
+// T is the first entry of the index table and nothing more. It used to be
+// spared by name in the naming pass, counted as defined by name in the
+// checking pass, and refused as a loop index by name in the parser. This
+// reads it in every position that lost one of those, with every value pinned.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#PARAMETERS
+span = T;                     // a parameter reads it
+#VARIABLES
+internal : y[T];              // a variable's shape reads it
+internal : z[T];
+internal : total;
+#CONSTRAINTS
+fix   : y[k] == k + 1 for k in [0:T-1];   // a range reads it
+body  : z[t] == y[t] * T;                 // a body reads it, beside the index t
+edge  : z[t] >= 0 where t < T;            // a condition reads it
+sums  : total == sum(y[i] for i in [0:span-1]);
+#OBJECTIVES
+min : total;

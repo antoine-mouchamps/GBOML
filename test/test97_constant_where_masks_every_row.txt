@@ -1,0 +1,20 @@
+// A constant `where` that is false, on a constraint reading several indexes
+// and carrying no `for`. The rows cannot be dropped without making the grid
+// ragged, so the condition travels as a mask instead, which used to be read
+// as the rows going out of bounds. If they were kept the model would be
+// infeasible, d being pinned to 2 just above.
+#TIMEHORIZON
+T = 3;
+#INDEXES
+N = 2;
+
+#NODE A
+#PARAMETERS
+on = 0;
+#VARIABLES
+internal : d[T][N];
+#CONSTRAINTS
+d_def   : d[t][n] == 2;
+dropped : d[t][n] == 5 where on > 0;
+#OBJECTIVES
+min z : d[t][0];

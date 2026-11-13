@@ -51,6 +51,14 @@ def convert_parameter_dict_to_values(parameter_name_object_dict: dict) -> dict:
     return parameter_name_value_dict
 
 
+def parameter_shapes(parameter_name_object_dict: dict) -> dict:
+    """The shape the flat values of every parameter reshape to, one axis
+    long when the parameter was written without brackets."""
+
+    return {name: list(parameter.get_shape()) or [len(parameter.get_value())]
+            for name, parameter in parameter_name_object_dict.items()}
+
+
 def get_nodes_and_edges_model_information(nodes, edges):
     """get_nodes_and_edges_model_information
 
@@ -79,6 +87,9 @@ def get_nodes_and_edges_model_information(nodes, edges):
             node.get_number_expanded_objectives()
         node_data["parameters"] = \
             convert_parameter_dict_to_values(node.get_parameter_dict())
+        shapes = parameter_shapes(node.get_parameter_dict())
+        if shapes:
+            node_data["parameter_shapes"] = shapes
         node_data["variables"] = node.get_variable_names()
         sub_nodes = node.get_sub_nodes()
         sub_edges = node.get_sub_hyperedges()
@@ -100,6 +111,9 @@ def get_nodes_and_edges_model_information(nodes, edges):
 
         link_data["parameters"] = \
             convert_parameter_dict_to_values(link.get_parameter_dict())
+        shapes = parameter_shapes(link.get_parameter_dict())
+        if shapes:
+            link_data["parameter_shapes"] = shapes
         link_data["variables_used"] = link.get_variables_used()
         hyperedge_info[link.get_name()] = link_data
 
@@ -107,24 +121,8 @@ def get_nodes_and_edges_model_information(nodes, edges):
 
 
 def objective_rows_values(solution, c_matrix, indep_terms_c, quadratic_objective):
-    """objective_rows_values
-
-    the value each row of the objective matrix takes at the solution
-    found, both degrees included. An objective is read back from the rows
-    it was expanded to, so the products of two variables are gathered per
-    row rather than summed as a whole.
-
-    Args:
-        solution (array): flat solution
-        c_matrix (coo-matrix): matrix of the degree one part
-        indep_terms_c (array): independent term of each row of c_matrix
-        quadratic_objective (coo-array): degree two part, over the rows of
-                                         c_matrix
-
-    Returns:
-        values (array): one value per row of the objective matrix
-
-    """
+    """The value each row of the objective takes at the solution, the
+    products of two variables gathered on the row they belong to."""
 
     linear_part = c_matrix * solution + indep_terms_c
 
@@ -174,18 +172,26 @@ def dict_values_in_nested_dict(nodes, hyperedges, solution,
         dict_variables_solution = {}
         dict_constraints_solution = {}
         node_name = node.get_name()
-        variables_dict = node.get_dictionary_variables()
+        variables_dict = node.get_dictionary_variables(get_id=False)
 
-        for var_name, identifier in variables_dict.items():
+        for var_name, variable in variables_dict.items():
             all_info_for_variable = {}
-            start_index = identifier.get_index()
-            size_variable = identifier.get_size()
-            values_concerned = solution[start_index:
-                                        (start_index + size_variable)]
+            columns = variable.get_columns()
+            values_concerned = solution[columns]
             if type(values_concerned) != list:
                 all_info_for_variable["values"] = values_concerned.flatten().tolist()
             else:
                 all_info_for_variable["values"] = values_concerned
+
+            # the shape the flat values reshape to, always written so that a
+            # reader never has to recover an extent by dividing lengths
+            # TODO: the shape describes the model, not the solution, so it
+            # belongs beside the variable names under "model". Those are a
+            # bare list of names today, and turning that list into an object
+            # would break every reader iterating them as strings.
+            shape = variable.get_shape()
+            all_info_for_variable["shape"] = \
+                list(shape) if shape else [len(all_info_for_variable["values"])]
 
             for variable_info_name, variable_info_values \
                     in variables_info.items():
@@ -193,14 +199,11 @@ def dict_values_in_nested_dict(nodes, hyperedges, solution,
                         type(variable_info_values[0]) == list:
                     list_info = []
                     for value_info in variable_info_values:
-                        list_info.append(value_info[start_index:
-                                                    (start_index
-                                                     + size_variable)])
+                        list_info.append(value_info[columns])
                     all_info_for_variable[variable_info_name] = list_info
                 else:
                     all_info_for_variable[variable_info_name] = \
-                        variable_info_values[start_index:
-                                             (start_index + size_variable)]
+                        variable_info_values[columns]
             dict_variables_solution[var_name] = all_info_for_variable
 
         dict_node_solution["variables"] = dict_variables_solution
@@ -341,6 +344,9 @@ def generate_json(
     model_data["number_nodes"] = program.get_number_nodes()
     model_data["global_parameters"] = \
         convert_parameter_dict_to_values(program.get_global_parameters())
+    shapes = parameter_shapes(program.get_global_parameters())
+    if shapes:
+        model_data["global_parameter_shapes"] = shapes
     nodes, hyperlinks = \
         get_nodes_and_edges_model_information(program.get_nodes(),
                                               program.get_links())
@@ -394,15 +400,12 @@ def flat_graph_and_add_node_prefix(nodes, hyperedges, solution, product, constra
     solution = np.array(solution)
     name_tuples = []
     for node in nodes:
-        variables_dict = node.get_dictionary_variables()
+        variables_dict = node.get_dictionary_variables(get_id=False)
         node_name = prefix+node.get_name()
-        for var_name, identifier in variables_dict.items():
+        for var_name, variable in variables_dict.items():
 
-            start_index = identifier.get_index()
-            size_variable = identifier.get_size()
-            identifier_name = node_name+"."+identifier.get_name()
-            values = solution[start_index:
-                              (start_index + size_variable)].flatten().tolist()
+            identifier_name = node_name+"."+var_name
+            values = solution[variable.get_columns()].flatten().tolist()
             name_tuples.append([identifier_name, values])
 
         parameters = node.get_parameter_dict()

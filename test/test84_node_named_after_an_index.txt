@@ -1,0 +1,17 @@
+// The same rule for the name of a node : its parameters are stored under it,
+// where the index already sits, so one used to overwrite the other and the
+// compiler died reading a dictionary as a parameter.
+#TIMEHORIZON
+T = 1;
+#INDEXES
+N = 3;
+
+#NODE N
+#PARAMETERS
+cap = 7;
+#VARIABLES
+internal : y[N];
+#CONSTRAINTS
+c : y[n] >= cap;
+#OBJECTIVES
+min : y[0];

@@ -1,0 +1,15 @@
+// The extent is the other name the same index puts in scope, and binding it
+// shadows the value every axis is written with. Only the lower half of the
+// pair used to be guarded, so this compiled.
+#TIMEHORIZON
+T = 3;
+#INDEXES
+N = 2;
+
+#NODE A
+#VARIABLES
+internal : y[3];
+#CONSTRAINTS
+bad : y[N] >= 1 for N in [0:2];
+#OBJECTIVES
+min : y[0];

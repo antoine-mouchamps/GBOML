@@ -1,0 +1,18 @@
+#TIMEHORIZON T = 2;
+
+#INDEXES
+K = 3;
+
+// two members gathered into an axis of three
+#NODE A
+    #NODE B
+        #VARIABLES
+            internal : x[T];
+            internal : y[T];
+        #CONSTRAINTS
+            x[t] == 1;
+            y[t] == 2;
+    #VARIABLES
+        internal : out[K][T] <- {B.x[T], B.y[T]};
+    #OBJECTIVES
+        min : out[0][t];

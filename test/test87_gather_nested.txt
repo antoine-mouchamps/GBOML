@@ -1,0 +1,41 @@
+#TIMEHORIZON T = 2;
+
+#INDEXES
+K = 2;
+M = 2;
+
+// three levels : out gathers h, and each h gathers the leaves of its own
+// sub nodes. same gathers the very same pair, alias renames one h
+#NODE A
+    #NODE B
+        #NODE D
+            #VARIABLES
+                internal : x[T];
+            #CONSTRAINTS
+                x[t] == 1;
+        #NODE E
+            #VARIABLES
+                internal : y[T];
+            #CONSTRAINTS
+                y[t] == 2;
+        #VARIABLES
+            internal : h[M][T] <- {D.x[T], E.y[T]};
+    #NODE C
+        #NODE F
+            #VARIABLES
+                internal : z[T];
+            #CONSTRAINTS
+                z[t] == 3;
+        #NODE G
+            #VARIABLES
+                internal : w[T];
+            #CONSTRAINTS
+                w[t] == 4;
+        #VARIABLES
+            internal : h[M][T] <- {F.z[T], G.w[T]};
+    #VARIABLES
+        internal : out[K][M][T] <- {B.h[M][T], C.h[M][T]};
+        internal : same[K][M][T] <- {B.h[M][T], C.h[M][T]};
+        internal : alias[M][T] <- B.h[M][T];
+    #OBJECTIVES
+        min : out[0][0][t];

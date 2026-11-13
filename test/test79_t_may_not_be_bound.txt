@@ -1,0 +1,13 @@
+// t numbers the rows of a constraint, so binding it to a range of its own
+// would mean two things by one name. The parser refused it by name; the
+// semantic pass refuses it as the declared index it is.
+#TIMEHORIZON
+T = 3;
+
+#NODE A
+#VARIABLES
+internal : y[3];
+#CONSTRAINTS
+bad : y[t] >= 1 for t in [0:2];
+#OBJECTIVES
+min : y[0];

@@ -8,6 +8,9 @@ from .node import Node
 
 
 def get_variable_name_size_offset_tuples_from_dict(variables_dict):
+    """Per node, one entry per block of columns a variable holds : a solver
+    reads them to set the type of x[first column : first column + size]."""
+
     tuple_names = []
     for node_name in variables_dict.keys():
 
@@ -16,17 +19,22 @@ def get_variable_name_size_offset_tuples_from_dict(variables_dict):
         for var_name in node_var_dict.keys():
             if type(node_var_dict[var_name]) == dict:
                 intermediate_dict = {var_name: node_var_dict[var_name]}
-                name_index = \
+                all_tuples.append(
                     get_variable_name_size_offset_tuples_from_dict(
-                        intermediate_dict)
+                        intermediate_dict))
+                continue
 
-            else:
-                variable = node_var_dict[var_name]
-                identifier = variable.get_identifier()
-                name_index = [identifier.get_index(),
-                              var_name, identifier.get_option(),
-                              identifier.get_size()]
-            all_tuples.append(name_index)
+            variable = node_var_dict[var_name]
+            identifier = variable.get_identifier()
+            first_columns = variable.get_block_first_columns()
+            if first_columns is None:
+                first_columns = [identifier.get_index()]
+
+            block_size = identifier.get_size() // len(first_columns)
+            for first_column in first_columns:
+                all_tuples.append([int(first_column), var_name,
+                                   identifier.get_option(), block_size])
+
         tuple_names.append([node_name, all_tuples])
     return tuple_names
 
@@ -40,7 +48,9 @@ class Program:
     - a list of link constraint arrays
     """
 
-    def __init__(self, vector_n, global_param=None, timescale=None, links=None):
+    def __init__(
+        self, vector_n, global_param=None, timescale=None, links=None, indexes=None
+    ):
         
         if global_param is None:
 
@@ -49,6 +59,8 @@ class Program:
         self.time = timescale
         self.links = links
         self.global_param = global_param
+        self.index_declarations = [] if indexes is None else indexes
+        self.index_table = {}
         self.link_constraints = []
         self.nb_var_index = 0
         self.var_dict = {}
@@ -152,6 +164,18 @@ class Program:
                 dict_param[name] = param
         
         return dict_param
+
+    def get_index_declarations(self):
+
+        return self.index_declarations
+
+    def set_index_table(self, index_table):
+
+        self.index_table = index_table
+
+    def get_index_table(self):
+
+        return self.index_table
 
     def get_time(self):
 

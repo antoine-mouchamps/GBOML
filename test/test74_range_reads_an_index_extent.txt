@@ -1,0 +1,35 @@
+// An index declares two names : the extent N, an ordinary parameter of the
+// whole model, and the index n, which numbers rows. A `for` range reads the
+// first the way it has always read T, and refuses the second, see test75.
+#TIMEHORIZON
+T = 2;
+#INDEXES
+N = 3;
+
+#NODE A
+#VARIABLES
+external : y[T*N];
+// the same six values, written over the two axes rather than flattened
+internal : x[T][N];
+#CONSTRAINTS
+// a node constraint's range reads the extent
+fix   : y[k] == k + 1 for k in [0:T*N-1];
+// and the two names stand side by side here, n numbering rows and N read
+// as the value 3
+plane : x[t][n] == t * N + n + 1;
+#OBJECTIVES
+min : y[0];
+
+#NODE B
+#VARIABLES
+external : w[T*N];
+#CONSTRAINTS
+lo : w[k] >= 0 for k in [0:T*N-1];
+#OBJECTIVES
+// an objective carries its own range, and reads the extent there too
+min cost : w[k] for k in [0:T*N-1];
+
+#HYPEREDGE H
+#CONSTRAINTS
+// and so does a hyperedge's, which reached nothing but T before
+link : B.w[k] == A.y[k] for k in [0:T*N-1];

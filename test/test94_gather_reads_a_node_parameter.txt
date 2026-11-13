@@ -1,0 +1,19 @@
+#TIMEHORIZON T = 2;
+
+// k_sep belongs to REPRO, and is read bare on both sides of the arrow
+#NODE REPRO
+    #PARAMETERS
+        k_sep = 3;
+    #NODE P
+        #VARIABLES
+            internal : prod[3][T];
+            internal : waste[T];
+        #CONSTRAINTS
+            prod[0][t] == 1;
+            prod[1][t] == 2;
+            prod[2][t] == 3;
+            waste[t] == 9;
+    #VARIABLES
+        internal : out[k_sep+1][T] <- {P.prod[k_sep][T], P.waste[T]};
+    #OBJECTIVES
+        min : out[0][t];

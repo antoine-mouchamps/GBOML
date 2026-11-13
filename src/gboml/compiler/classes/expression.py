@@ -134,9 +134,9 @@ class Expression(Symbol):
             seed = self.name
             return type(seed) == Identifier and (
                 seed.get_name() in names
-                or (
-                    seed.get_type() == "assign"
-                    and seed.get_expression().depends_on_index(names)
+                or any(
+                    expression.depends_on_index(names)
+                    for expression in seed.get_expressions()
                 )
             )
 
@@ -288,20 +288,22 @@ class Expression(Symbol):
 
                     expr = Expression('literal', value, line=self.line)
                 elif id_type == "assign":
-
-                    index_expr = identifier.get_expression()
-                    index_expr = index_expr.replace(name_index, value,
-                                                    definitions)
-                    identifier.set_expression(index_expr)
+                    index_exprs = tuple(
+                        index_expr.replace(name_index, value, definitions)
+                        for index_expr in identifier.get_expressions()
+                    )
+                    identifier.set_expressions(index_exprs)
                     self.set_name(identifier)
             elif type(name) == Attribute:
 
                 attr = name
                 identifier = attr.get_attribute()
                 if identifier == 'assign':
-                    index_expr = identifier.get_expression()
-                    index_expr = index_expr.replace(name_index, value)
-                    identifier.set_expression(index_expr)
+                    index_exprs = tuple(
+                        index_expr.replace(name_index, value)
+                        for index_expr in identifier.get_expressions()
+                    )
+                    identifier.set_expressions(index_exprs)
                     self.set_name(identifier)
         else:
 
@@ -369,7 +371,7 @@ class Expression(Symbol):
                 # get id type and set found to false
                 identifier_type = identifier.get_type()
                 identifier_name = identifier.get_name()
-                identifier_expr = identifier.get_expression()
+                identifier_exprs = identifier.get_expressions()
                 identifier_node_name = identifier.get_node_name()
                 dictionary_definitions = definitions
 
@@ -382,10 +384,12 @@ class Expression(Symbol):
                            + str(self.get_line()))
 
                 parameter = dictionary_definitions[identifier_name]
-                if isinstance(parameter, list) or isinstance(parameter, int) or isinstance(parameter, float):
+                if isinstance(parameter, (list, int, float)):
                     vector_value = parameter
+                    declared_shape = None
                 else:
                     vector_value = parameter.get_value()
+                    declared_shape = parameter.get_shape()
 
                 if isinstance(vector_value, list) or isinstance(vector_value, np.ndarray):
                     nb_values = len(vector_value)
@@ -401,20 +405,43 @@ class Expression(Symbol):
                     value = vector_value
 
                 elif identifier_type == "assign":
+                    shape = declared_shape if declared_shape else (nb_values,)
+                    if len(identifier_exprs) != len(shape):
+                        error_(
+                            "ERROR: the parameter "
+                            + str(identifier_name)
+                            + " runs over "
+                            + str(len(shape))
+                            + " axis(es) and is read with "
+                            + str(len(identifier_exprs))
+                            + " index(es) at "
+                            "line "
+                            + str(self.get_line())
+                            + ". Every axis has to be indexed."
+                        )
 
-                    index = identifier_expr.evaluate_expression(definitions)
-                    if type(index) == float:
+                    position = 0
+                    for index_expr, extent in zip(identifier_exprs, shape):
+                        index = index_expr.evaluate_expression(definitions)
+                        if type(index) == float:
+                            if index.is_integer() is False:
+                                error_(
+                                    "Error: an index is a float: "
+                                    + str(identifier)
+                                    + "at line "
+                                    + str(identifier.get_line())
+                                )
+                            index = int(round(index))
+                        if index >= extent or index < 0:
+                            error_(
+                                "Wrong indexing in Identifier '"
+                                + str(identifier)
+                                + "' at line, "
+                                + str(self.get_line())
+                            )
+                        position = position * extent + index
 
-                        if index.is_integer() is False:
-                            error_("Error: an index is a float: "
-                                   + str(identifier)
-                                   + 'at line ' + str(identifier.get_line()))
-                        index = int(round(index))
-                    if index >= nb_values or index < 0:
-                        error_("Wrong indexing in Identifier '"
-                               + str(identifier)
-                               + "' at line, " + str(self.get_line()))
-                    value = vector_value[index]
+                    value = vector_value[position]
                 else:
 
                     error_("Wrong time indexing in Identifier '"

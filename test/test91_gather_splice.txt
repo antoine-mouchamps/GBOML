@@ -1,0 +1,22 @@
+#TIMEHORIZON T = 2;
+
+#INDEXES
+N = 2;
+KSEP = 3;
+
+// prod has one axis more than a slot of out, so it takes three of the four
+// slots and waste takes the last one. other lists the same two the other way
+#NODE A
+    #NODE P
+        #VARIABLES
+            internal : prod[KSEP][T][N];
+            internal : waste[T][N];
+        #CONSTRAINTS
+            prod[ksep][t][n] == 1 + ksep;
+            waste[t][n] == 9;
+    #VARIABLES
+        internal : out[4][T][N] <- {P.prod[KSEP][T][N], P.waste[T][N]};
+        internal : other[4][T][N] <- {P.waste[T][N], P.prod[KSEP][T][N]};
+        internal : whole[KSEP][T][N] <- {P.prod[KSEP][T][N]};
+    #OBJECTIVES
+        min : out[0][t][n];

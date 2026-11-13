@@ -1,0 +1,16 @@
+#TIMEHORIZON T = 2;
+
+// the two groups hold a different number of members, so the list has no
+// shape at all
+#NODE A
+    #NODE B
+        #VARIABLES
+            internal : x[T];
+            internal : y[T];
+        #CONSTRAINTS
+            x[t] == 1;
+            y[t] == 2;
+    #VARIABLES
+        internal : out[2][2][T] <- {{B.x[T], B.y[T]}, {B.x[T]}};
+    #OBJECTIVES
+        min : out[0][0][t];

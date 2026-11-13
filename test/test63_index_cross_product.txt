@@ -1,0 +1,14 @@
+#TIMEHORIZON
+T = 2;
+#INDEXES
+N = 2;
+M = 3;
+#NODE A
+#PARAMETERS
+#VARIABLES
+internal : x[T][N];
+internal : y[T][M];
+#CONSTRAINTS
+cross : x[t][n] <= y[t][m];
+#OBJECTIVES
+min : x[0][0];

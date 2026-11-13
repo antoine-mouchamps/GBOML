@@ -1,0 +1,19 @@
+#TIMEHORIZON T = 2;
+
+#INDEXES
+N = 2;
+KSEP = 3;
+
+// three slots from prod and one from waste, gathered into an axis of five
+#NODE A
+    #NODE P
+        #VARIABLES
+            internal : prod[KSEP][T][N];
+            internal : waste[T][N];
+        #CONSTRAINTS
+            prod[ksep][t][n] == 1 + ksep;
+            waste[t][n] == 9;
+    #VARIABLES
+        internal : out[5][T][N] <- {P.prod[KSEP][T][N], P.waste[T][N]};
+    #OBJECTIVES
+        min : out[0][t][n];

@@ -36,49 +36,54 @@ class ByteArray:
 
 
 def __f_index2__(
-    expr: np.ndarray, all_index: ByteArray, name: np.ndarray
+    indexes: tuple[np.ndarray, ...], all_index: ByteArray, name: np.ndarray
 ) -> np.ndarray:
-    max_length = len(name)
-    is_in = np.array(((0 <= expr) & (expr < max_length)), dtype=bool)
-    all_index.intersect(is_in)
-    expr = np.array(expr, dtype=int)
+    shape = np.shape(name)
+    assert len(indexes) == len(shape), (
+        "Internal error: a parameter read with the wrong number of indexes"
+    )
+    clipped = []
+    for index, extent in zip(indexes, shape):
+        is_in = np.array(((0 <= index) & (index < extent)), dtype=bool)
+        all_index.intersect(is_in)
+        index = np.array(index, dtype=int)
+        if not is_in.all():
+            index = np.clip(index, 0, max(extent - 1, 0))
+        clipped.append(index)
 
-    if not is_in.all():
-        return_value = np.array(name[np.clip(expr, 0, max_length - 1)], dtype=float)
-    else:
-        return_value = np.array(name[expr], dtype=float)
-
-    return return_value
+    return np.array(name[tuple(clipped)], dtype=float)
 
 
 class Context:
     """
-    The namespace expressions are evaluated against, plus the shape they are
-    evaluated at. `shape` holds the rows of the constraint, then the range of
-    every outer sum, outermost first. `index_names` are the indexes in scope,
-    each one bound to an array of the rank of `shape`.
-    `filled` is false on the positions the outer sums do not read, None
-    standing for the mask that reads them all.
+    The namespace an expression is evaluated against, and the shape it is
+    evaluated at. `shape` is the rows of the constraint, one axis per index
+    they run over, then one axis per sum currently open, outermost first.
+    `nb_row_axes` is the limit between both. `index_names` are the indexes in
+    scope, each bound to an array of that rank. `filled` is false where the
+    open sums do not reach, None meaning they reach everywhere.
     """
 
-    __slots__ = ("definitions", "filled", "index_names", "shape")
+    __slots__ = ("definitions", "filled", "index_names", "nb_row_axes", "shape")
 
     def __init__(
         self,
         definitions: dict,
         shape: tuple[int, ...],
         index_names: list[str],
+        nb_row_axes: int,
         filled: np.ndarray | None = None,
     ) -> None:
 
         self.definitions = definitions
         self.shape = shape
         self.index_names = index_names
+        self.nb_row_axes = nb_row_axes
         self.filled = filled
 
     @property
-    def nb_rows(self) -> int:
-        return self.shape[0]
+    def row_shape(self) -> tuple[int, ...]:
+        return self.shape[: self.nb_row_axes]
 
     @property
     def rank(self) -> int:
@@ -92,8 +97,8 @@ class Context:
         if self.filled is not None:
             in_bounds = in_bounds | np.logical_not(self.filled)
         in_bounds = np.broadcast_to(in_bounds, self.shape)
-        if self.rank > 1:
-            in_bounds = in_bounds.all(axis=tuple(range(1, self.rank)))
+        if self.rank > self.nb_row_axes:
+            in_bounds = in_bounds.all(axis=tuple(range(self.nb_row_axes, self.rank)))
 
         return np.array(in_bounds)
 
@@ -148,43 +153,78 @@ class ConstantNode(Node):
 
         value, valid = context.evaluate(self.python_expression)
 
-        return Block.of_constant(context.nb_rows, context.rank, value, valid)
+        return Block.of_constant(context.row_shape, context.rank, value, valid)
 
 
 class VariableNode(Node):
-    """One variable of the problem, giving one column per position."""
+    """
+    One variable of the problem, giving one column per position. Its
+    `nb_block_indexes` leading indexes choose one block of consecutive
+    columns and the rest walk inside it, an ordinary variable being one block.
+    """
 
-    __slots__ = ("index_base", "python_offset", "size")
+    __slots__ = ("block_first_columns", "columns_per_index", "index_base",
+                 "nb_block_indexes", "python_offsets", "shape")
 
     def __init__(
-        self, index_base: int, offset_expression: Expression | None, size: int
+        self,
+        index_base: int,
+        offset_expressions: list[Expression],
+        shape: tuple[int, ...],
+        block_first_columns: np.ndarray | None = None,
+        nb_block_indexes: int = 0,
     ) -> None:
 
-        self.index_base = index_base
-        self.python_offset = (
-            None
-            if offset_expression is None
-            else offset_expression.turn_to_python_expression()
+        assert len(offset_expressions) == len(shape), (
+            "Internal error: a variable read with the wrong number of indexes"
         )
-        self.size = size
+        # a gathered variable carries its position in its first columns
+        self.index_base = 0 if block_first_columns is not None else index_base
+        self.block_first_columns = block_first_columns
+        self.nb_block_indexes = nb_block_indexes
+        self.python_offsets = tuple(
+            expression.turn_to_python_expression() for expression in offset_expressions
+        )
+        self.shape = shape
+        # how many columns one unit of each index stands for
+        columns_per_index = []
+        columns = 1
+        for extent in reversed(shape):
+            columns_per_index.append(columns)
+            columns *= extent
+        self.columns_per_index = tuple(reversed(columns_per_index))
 
     def evaluate(self, context: Context) -> Block:
 
         valid = None
-        if self.python_offset is None:
-            index_offset = np.zeros((1,) * context.rank, dtype=int)
-        else:
-            index_offset, valid = context.evaluate(self.python_offset)
-            in_bounds = (0 <= index_offset) & (index_offset < self.size)
+        block_number = None
+        # a variable read with no index at all has no offset to add, so the
+        # base is lifted to the rank the block is evaluated at right away
+        column = np.full((1,) * context.rank, self.index_base, dtype=int)
+        for axis, (python_offset, extent, columns) in enumerate(
+            zip(self.python_offsets, self.shape, self.columns_per_index)
+        ):
+            index_offset, offset_valid = context.evaluate(python_offset)
+            valid = combine_valid(valid, offset_valid)
+            index_offset = np.asarray(index_offset)
+            in_bounds = (0 <= index_offset) & (index_offset < extent)
             if not np.all(in_bounds):
                 # an index out of range invalidates its row, and is clamped so
                 # that the column stays addressable until the row is dropped
                 valid = combine_valid(valid, context.valid_rows(in_bounds))
-                index_offset = np.clip(index_offset, 0, max(self.size - 1, 0))
+                index_offset = np.clip(index_offset, 0, max(extent - 1, 0))
+            if axis < self.nb_block_indexes:
+                block_number = (
+                    index_offset if block_number is None
+                    else block_number * extent + index_offset
+                )
+            else:
+                column = column + index_offset * columns
 
-        return Block.of_variable(
-            context.nb_rows, context.rank, self.index_base + index_offset, valid
-        )
+        if block_number is not None:
+            column = column + self.block_first_columns[block_number]
+
+        return Block.of_variable(context.row_shape, context.rank, column, valid)
 
 
 class AdditionNode(Node):
@@ -259,7 +299,7 @@ class PowerNode(Node):
 
         if self.exponent == 0:
             return Block.of_constant(
-                context.nb_rows, context.rank, np.ones((1,) * context.rank)
+                context.row_shape, context.rank, np.ones((1,) * context.rank)
             )
 
         result = self.child.evaluate(context)
@@ -373,6 +413,7 @@ class SumNode(Node):
                 definitions,
                 context.shape + (width,),
                 outer_index_names + [self.index_name],
+                context.nb_row_axes,
                 inner_filled,
             )
         )
@@ -382,9 +423,9 @@ class SumNode(Node):
 
 def build_node(
     expression: Expression,
-    variables: dict[str, dict[str, Variable]],
+    variables: dict,
     constants: dict,
-    collected_variables: list[list[str]],
+    collected_variables: list[Variable],
 ) -> tuple[Node, bool]:
     """
     build_node function : compiles an expression into the tree the evaluation
@@ -408,14 +449,14 @@ def build_node(
             name = identifier.get_name()
             if node_name in variables and name in variables[node_name]:
                 collected_variables.append([node_name, name])
-                variable_identifier: Identifier = variables[node_name][
-                    name
-                ].get_identifier()
+                variable: Variable = variables[node_name][name]
 
                 return VariableNode(
-                    variable_identifier.get_index(),
-                    identifier.get_expression(),
-                    variable_identifier.get_size(),
+                    variable.get_identifier().get_index(),
+                    identifier.get_expressions(),
+                    variable.get_shape(),
+                    variable.get_block_first_columns(),
+                    variable.get_nb_block_indexes(),
                 ), True
 
         return ConstantNode(expression), False
@@ -438,7 +479,7 @@ def build_node(
         return ConstantNode(expression), False
 
     if e_type == "u-":
-        return AdditionNode([(-1, sub_nodes[0][0])]), True
+        return AdditionNode([[-1, sub_nodes[0][0]]]), True
 
     if e_type == "+" or e_type == "-":
         sign = 1 if e_type == "+" else -1
@@ -467,15 +508,28 @@ class Factorize:
     the variables.
     """
 
-    def __init__(self, obj: Constraint | Objective) -> None:
+    def __init__(self, obj: Constraint | Objective, indexes: dict) -> None:
 
-        self.name = None
         self.obj = obj
+        self.name = obj.get_name()
         self.node = None
         self.variables = []
         self.line = obj.get_line()
-        self.type_fact = "objective" if type(obj) == Objective else "constraint"
         self.extension_type = ""
+        if type(obj) == Objective:
+            self.type_fact = "objective"
+            read = [obj.get_expression()]
+        else:
+            self.type_fact = "constraint"
+            read = [obj.get_lhs(), obj.get_rhs()]
+        condition = obj.get_condition()
+        if condition is not None:
+            read.append(condition)
+        self.row_indexes = tuple(
+            (name.lower(), parameter.get_extent())
+            for name, parameter in indexes.items()
+            if any(expression.depends_on_index([name.lower()]) for expression in read)
+        )
         self.sparse = None
         self.independent_terms = []
         self.quadratic_terms = None
@@ -511,9 +565,7 @@ class Factorize:
 
         return len(self.independent_terms)
 
-    def factorize_constraint(
-        self, variables: dict[str, dict[str, Variable]], constants: dict
-    ) -> None:
+    def factorize_constraint(self, variables: dict, constants: dict) -> None:
         """
         factorize_constraint function : compiles both sides of the constraint
         into a single expression, the left hand side minus the right hand side
@@ -523,16 +575,13 @@ class Factorize:
         """
 
         constraint = self.obj
-        self.name = constraint.name
         left, _ = build_node(constraint.get_lhs(), variables, constants, self.variables)
         right, _ = build_node(
             constraint.get_rhs(), variables, constants, self.variables
         )
-        self.node = AdditionNode([(1, left), (-1, right)])
+        self.node = AdditionNode([[1, left], [-1, right]])
 
-    def factorize_objective(
-        self, variables: dict[str, dict[str, Variable]], constants: dict
-    ) -> None:
+    def factorize_objective(self, variables: dict, constants: dict) -> None:
         """
         factorize_objective function : compiles the expression of the objective
         INPUT:  variables -> dictionary of <name,identifier> objects
@@ -540,55 +589,60 @@ class Factorize:
         OUTPUT: None
         """
 
-        objective = self.obj
-        self.name = objective.name
         self.node, _ = build_node(
-            objective.get_expression(), variables, constants, self.variables
+            self.obj.get_expression(), variables, constants, self.variables
         )
 
-    def _row_index_values(
+    def _row_axes(
         self, definitions: dict
-    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int_]], bool]:
+    ) -> tuple[list[tuple[str, np.ndarray]], RowMask | None, bool]:
         """
-        _row_index_values function : the values the index of the constraint
-        takes, that is one per row -- they are the rows.
+        _row_axes function : one axis per index the rows run over, the values
+        that index takes along it, and the mask a `where` leaves of them. Each
+        axis is bound in the definitions, at the rank the rows have.
+
         INPUT:  definitions -> namespace the expressions are evaluated against
-        OUTPUT: the values of the index, True whenever the range was written
-                explicitly
+        OUTPUT: list of (name, values), the mask of the rows a `where` keeps
+                or None, True whenever a range was written explicitly
         """
 
         obj = self.obj
-        index_name = obj.get_index_var()
-        condition = obj.get_condition()
         definitions["extension_range"] = ByteArray(1)
-        row_range = obj.get_time_range(definitions)
-        range_is_written = row_range is not None
+        time_range = obj.get_time_range(definitions)
+        range_is_written = time_range is not None
 
+        axes = []
         if range_is_written:
-            index_values = np.array(row_range)
-        else:
-            if self.type_fact == "constraint":
-                expressions = [obj.get_rhs(), obj.get_lhs()]
-            else:
-                expressions = [obj.get_expression()]
-            if condition is not None:
-                expressions.append(condition)
+            axes.append((obj.get_index_var(), np.array(time_range)))
+        axes += [(name, np.arange(extent)) for name, extent in self.row_indexes]
 
-            index_is_read = any(
-                expression.depends_on_index([index_name]) for expression in expressions
-            )
-            nb_rows = definitions["T"] if index_is_read else 1
-            index_values = np.arange(nb_rows)
+        if not axes:
+            # nothing the rows could run over, so the constraint holds once
+            axes.append((obj.get_index_var(), np.arange(1)))
 
-        if condition is not None:
-            definitions[index_name] = index_values
-            kept = eval(condition.turn_to_python_expression(), definitions, {})
-            # a condition which does not read the index gives a single bool,
-            # keeping either every row or none of them
-            kept = np.broadcast_to(np.asarray(kept, dtype=bool), index_values.shape)
-            index_values = index_values[kept]
+        for axis, (name, values) in enumerate(axes):
+            shape = [1] * len(axes)
+            shape[axis] = len(values)
+            definitions[name] = values.reshape(shape)
 
-        return index_values, range_is_written
+        condition = obj.get_condition()
+        if condition is None:
+            return axes, None, range_is_written
+
+        kept = eval(condition.turn_to_python_expression(), definitions, {})
+        # a condition reading no index at all gives a single bool
+        row_shape = tuple(len(values) for _, values in axes)
+        kept = np.array(np.broadcast_to(np.asarray(kept, dtype=bool), row_shape))
+
+        if len(axes) == 1:
+            # one axis may lose a row, a grid of two axes or more may not
+            name, values = axes[0]
+            axes = [(name, values[kept])]
+            definitions[name] = axes[0][1]
+
+            return axes, None, range_is_written
+
+        return axes, kept, range_is_written
 
     def extend(self, definitions: dict) -> None:
         """
@@ -613,12 +667,10 @@ class Factorize:
         else:
             self.extension_type = obj.get_type()
 
-        row_index_values, range_is_written = self._row_index_values(definitions)
-        row_index_name = obj.get_index_var()
-        nb_rows = len(row_index_values)
-        definitions[row_index_name] = row_index_values
+        axes, row_condition, range_is_written = self._row_axes(definitions)
+        row_shape = tuple(len(values) for _, values in axes)
 
-        if nb_rows == 0:
+        if 0 in row_shape:
             # a part is None exactly when it holds no entry
             self.sparse = None
             self.quadratic_terms = None
@@ -626,13 +678,29 @@ class Factorize:
 
             return
 
-        block = self.node.evaluate(Context(definitions, (nb_rows,), [row_index_name]))
+        block = self.node.evaluate(
+            Context(
+                definitions,
+                row_shape,
+                [name for name, _ in axes],
+                len(row_shape),
+            )
+        )
         valid = block.valid
         if valid is None:
-            valid = np.ones(nb_rows, dtype=bool)
+            valid = np.ones(row_shape, dtype=bool)
 
         if not valid.any():
-            dropped = str(row_index_values[~valid])
+            dropped = str(
+                [
+                    tuple(
+                        int(values[position])
+                        for (_, values), position in zip(axes, positions)
+                    )
+                    for positions in zip(*np.nonzero(~valid))
+                ]
+            )
+            row_index_names = ", ".join(name for name, _ in axes)
             if range_is_written:
                 error_(
                     "Constraint : "
@@ -641,20 +709,29 @@ class Factorize:
                     + str(obj.get_line())
                     + " has a time range ill-defined "
                     "as a variable goes out of bounds for "
-                    + str(row_index_name)
+                    + str(row_index_names)
                     + " equals "
                     + dropped
                 )
             print(
                 "Warning constraint : %s at line %s is ignored for %s "
                 "equal to %s"
-                % (str(obj), str(obj.get_line()), str(row_index_name), dropped)
+                % (str(obj), str(obj.get_line()), row_index_names, dropped)
             )
             self.sparse = None
             self.quadratic_terms = None
             self.independent_terms = np.zeros(0)
 
             return
+
+        if row_condition is not None:
+            valid = valid & row_condition
+            if not valid.any():
+                self.sparse = None
+                self.quadratic_terms = None
+                self.independent_terms = np.zeros(0)
+
+                return
 
         if self.type_fact == "constraint":
             # the matrix holds the coefficients of the left hand side minus the

@@ -1,6 +1,7 @@
-// The bounds of a range are evaluated before the index they run over is
-// bound, so an index written there names nothing. The bounds used to reach
-// the evaluator unchecked, where a bare name raised a NameError.
+// The bounds of a range are read like any other expression, and used to be
+// the one place a bare name reached the evaluator unchecked, where it raised
+// a NameError. An index written there is refused with its own message, see
+// test82.
 #TIMEHORIZON
 T = 3;
 
@@ -8,6 +9,6 @@ T = 3;
 #VARIABLES
 internal : y[3];
 #CONSTRAINTS
-bad : y[k] >= 0 for k in [0:t];
+bad : y[k] >= 0 for k in [0:zzz];
 #OBJECTIVES
 min : y[0];

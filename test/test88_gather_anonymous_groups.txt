@@ -1,0 +1,28 @@
+#TIMEHORIZON T = 2;
+
+#INDEXES
+K = 2;
+M = 2;
+
+// an anonymous group holding two leaves beside a plain variable of the whole
+// remaining shape, so the two members of the list are of different depths
+#NODE A
+    #NODE D
+        #VARIABLES
+            internal : x[T];
+        #CONSTRAINTS
+            x[t] == 1;
+    #NODE E
+        #VARIABLES
+            internal : y[T];
+        #CONSTRAINTS
+            y[t] == 2;
+    #NODE F
+        #VARIABLES
+            internal : plain[M][T];
+        #CONSTRAINTS
+            plain[m][t] == 3 + m;
+    #VARIABLES
+        internal : out[K][M][T] <- {{D.x[T], E.y[T]}, F.plain[M][T]};
+    #OBJECTIVES
+        min : out[0][0][t];

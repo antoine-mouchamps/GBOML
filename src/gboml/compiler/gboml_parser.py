@@ -37,13 +37,24 @@ precedence = (  # Unary minus operator
 # Start symbol
 
 def p_start(p):
-    """start : time global program"""
+    """start : time global indexes program"""
 
     timehorizon = p[1]
     global_parameters = p[2]
-    list_node, list_hyperlink = p[3]
+    declared_indexes = p[3]
+    list_node, list_hyperlink = p[4]
     p[0] = Program(list_node, global_param=global_parameters,
-                   timescale=timehorizon, links=list_hyperlink)
+                   timescale=timehorizon, links=list_hyperlink,
+                   indexes=declared_indexes)
+
+
+def p_indexes(p):
+    """indexes : INDEXES define_parameters
+               | empty"""
+
+    # an index is declared as a parameter is, N = 24 giving the parameter N
+    # and the index n it runs over
+    p[0] = [] if p[1] is None else p[2]
 
 
 def p_global(p):
@@ -272,7 +283,9 @@ def p_redefine_parameters_variables(p):
     elif len(p) == 5:
         variable_name = p[1]
         variable_type = p[2]
-        list_parameters, list_variables = p[2]
+        # the rest of the list is the fourth token: this entry is name, scope,
+        # semicolon. p[2] is the scope itself
+        list_parameters, list_variables = p[4]
         list_variables.append([variable_name, variable_type, p.lineno(1)])
         p[0] = [list_parameters, list_variables]
 
@@ -310,23 +323,25 @@ def p_define_parameters(p):
 
 
 def p_parameter(p):
-    """parameter : ID EQUAL expr SEMICOLON
-                 | ID EQUAL LCBRAC expr more_values RCBRAC SEMICOLON
-                 | ID EQUAL IMPORT FILENAME SEMICOLON"""
+    """parameter : ID opt_index_list EQUAL expr SEMICOLON
+                 | ID opt_index_list EQUAL LCBRAC expr more_values RCBRAC SEMICOLON
+                 | ID opt_index_list EQUAL IMPORT FILENAME SEMICOLON"""
 
     parameter_id = p[1]
+    # one extent expression per axis, empty when written without brackets
+    shape = p[2]
 
     # parameter defined by an expression
-    if len(p) == 5:
+    if len(p) == 6:
 
-        parameter_expression = p[3]
+        parameter_expression = p[4]
         p[0] = Parameter(parameter_id, parameter_expression, line=p.lineno(1))
 
     # parameter defined as a table
-    elif len(p) == 8:
+    elif len(p) == 9:
 
-        list_values = p[5]
-        last_value = p[4]
+        list_values = p[6]
+        last_value = p[5]
         p[0] = Parameter(parameter_id, None, line=p.lineno(1))
         list_values.insert(0, last_value)
         p[0].set_vector(list_values)
@@ -334,8 +349,10 @@ def p_parameter(p):
     # parameter defined via an import
     else:
 
-        filename = p[4]
+        filename = p[5]
         p[0] = Parameter(parameter_id, filename, line=p.lineno(1))
+
+    p[0].set_shape_expressions(shape)
 
 
 def p_more_values(p):
@@ -361,9 +378,36 @@ def p_variables(p):
     p[0] = p[2]
 
 
+def p_gathered_list(p):
+    """gathered_list : LCBRAC gathered more_gathered RCBRAC"""
+
+    p[0] = [p[2]] + p[3]
+
+
+def p_gathered(p):
+    """gathered : id
+                | gathered_list"""
+
+    p[0] = p[1]
+
+
+def p_more_gathered(p):
+    """more_gathered : COMMA gathered more_gathered
+                     | empty"""
+
+    # if no more members are gathered
+    if len(p) == 2:
+
+        p[0] = []
+
+    else:
+        p[0] = [p[2]] + p[3]
+
+
 def p_define_variables(p):
     """define_variables : external_internal type_var option_var COLON id SEMICOLON var_aux
-                        | external_internal type_var option_var COLON id ASSIGN id SEMICOLON var_aux"""
+                        | external_internal type_var option_var COLON id ASSIGN id SEMICOLON var_aux
+                        | external_internal type_var option_var COLON id ASSIGN gathered_list SEMICOLON var_aux"""
 
     identifier_option = p[2]
     var_identifier = p[5]
@@ -619,11 +663,30 @@ def p_obj_aux(p):
         p[0] = p[1]
 
 
+def p_index_list(p):
+    """index_list : LBRAC expr RBRAC
+                  | index_list LBRAC expr RBRAC"""
+
+    # one bracket group per axis, kept in the order they were written
+    if len(p) == 4:
+        p[0] = [p[2]]
+    else:
+        p[1].append(p[3])
+        p[0] = p[1]
+
+
+def p_opt_index_list(p):
+    """opt_index_list : index_list
+                      | empty"""
+
+    p[0] = [] if p[1] is None else p[1]
+
+
 def p_id(p):
     """id : ID
           | ID DOT ID
-          | ID LBRAC expr RBRAC
-          | ID DOT ID LBRAC expr RBRAC"""
+          | ID index_list
+          | ID DOT ID index_list"""
 
     if len(p) == 2:
         # Rule ID
@@ -634,15 +697,15 @@ def p_id(p):
         # Rule ID DOT ID
         p[0] = Identifier('basic', p[3], node_name=p[1], line=p.lineno(1))
 
+    elif len(p) == 3:
+
+        # Rule ID index_list
+        p[0] = Identifier('assign', p[1], expressions=p[2], line=p.lineno(1))
+
     elif len(p) == 5:
 
-        # Rule ID LBRAC expr RBRAC
-        p[0] = Identifier('assign', p[1], expression=p[3], line=p.lineno(1))
-
-    elif len(p) == 7:
-
-        # Rule ID DOT ID LBRAC expr RBRAC
-        p[0] = Identifier('assign', p[3], node_name=p[1], expression=p[5],
+        # Rule ID DOT ID index_list
+        p[0] = Identifier('assign', p[3], node_name=p[1], expressions=p[4],
                           line=p.lineno(1))
 
 

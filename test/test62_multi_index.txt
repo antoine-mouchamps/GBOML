@@ -1,0 +1,36 @@
+// Two indexes on one variable. Every value is pinned by an equality, so a
+// stride read the wrong way round, a row order laid out the wrong way, or an
+// axis bound-checked against the wrong extent all come out as a wrong number
+// rather than as a crash.
+//
+// cap is a 3 by 4 table written flat and read at its declared shape, so
+// cap[t][n] == 10 * t + n. x copies it, which pins the strides. shifted reads
+// x one step back on the first axis and one step on the second, so the rows
+// where either falls off the end are dropped exactly as they always were for
+// t alone. rowsum and total sum over the axes with fresh letters, n being a
+// declared index and therefore not available to a sum.
+#TIMEHORIZON
+T = 3;
+
+#INDEXES
+N = 4;
+
+#NODE A
+#PARAMETERS
+cap[T][N] = {0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23};
+w[N] = {1, 10, 100, 1000};
+#VARIABLES
+internal : x[T][N];
+internal : shifted[T][N];
+internal : rowsum[T];
+internal : total;
+#CONSTRAINTS
+fix      : x[t][n] == cap[t][n];
+// the rows where t - 1 or n + 1 leaves the variable are dropped, and the
+// objective pushes what is left of shifted down to its bound
+floor    : shifted[t][n] >= 0;
+shift    : shifted[t][n] == x[t-1][n+1];
+byrow    : rowsum[t] == sum(x[t][i] for i in [0:N-1]);
+weighted : total == sum(sum(w[i]*x[j][i] for i in [0:N-1]) for j in [0:T-1]);
+#OBJECTIVES
+min : total + sum(sum(shifted[j][i] for i in [0:N-1]) for j in [0:T-1]);

@@ -152,8 +152,6 @@ class Hyperedge:
             param.pop("global")
         if "GLOBAL" in param:
             param.pop("GLOBAL")
-        if "T" in param:
-            param.pop("T")
         self.parameter_dict = param
 
     def set_nb_constraints(self, number, type_constr):
@@ -166,11 +164,10 @@ class Hyperedge:
 
         return self.parameter_dict
 
-    def get_dictionary_parameters(self):
+    def get_dictionary_parameters(self, reserved_names=()):
 
         parameters = self.parameters
         all_parameters = dict()
-        reserved_names = ["t", "T"]
         for param in parameters:
 
             name = param.get_name()

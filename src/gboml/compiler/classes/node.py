@@ -173,8 +173,6 @@ class Node:
             param.pop("global")
         if "GLOBAL" in param:
             param.pop("GLOBAL")
-        if "T" in param:
-            param.pop("T")
         self.param_dict = param
 
     def set_expressions(self, list_expression):
@@ -348,11 +346,11 @@ class Node:
 
         return self.nb_constraint_matrix
 
-    def get_dictionary_variables(self, get_type="all", get_id=True):
+    def get_dictionary_variables(self, get_type="all", get_id=True,
+                                 reserved_names=()):
 
         variables = self.variables
         all_variables = {}
-        reserved_names = ["t", "T"]
         for var in variables:
 
             v_type = var.get_type()
@@ -378,11 +376,10 @@ class Node:
 
         return all_variables
 
-    def get_dictionary_parameters(self):
+    def get_dictionary_parameters(self, reserved_names=()):
 
         parameters = self.parameters
         all_parameters = dict()
-        reserved_names = ["t", "T"]
         for param in parameters:
 
             name = param.get_name()
@@ -400,11 +397,10 @@ class Node:
 
         return all_parameters
 
-    def get_dictionary_expressions(self):
+    def get_dictionary_expressions(self, reserved_names=()):
 
         expressions = self.expression
         all_expressions = dict()
-        reserved_names = ["t", "T"]
         for name, expr, line in expressions:
 
             if name in reserved_names:

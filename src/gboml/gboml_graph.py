@@ -84,6 +84,7 @@ class GbomlGraph:
         self.timehorizon: Time = Time("T", Expression('literal', timehorizon))
         self.node_hyperedge_dict = {}
         self.global_parameters = []
+        self.index_declarations = []
 
         self.program = None
         self.matrix_a_ineq = None
@@ -227,8 +228,12 @@ class GbomlGraph:
 
         """
         self.global_parameters = self.__remove_duplicates(self.global_parameters)
+        self.index_declarations = \
+            self.__remove_duplicates(self.index_declarations)
         program = Program(self.list_nodes, timescale=self.timehorizon,
-                          links=self.list_hyperedges, global_param=self.global_parameters)
+                          links=self.list_hyperedges,
+                          global_param=self.global_parameters,
+                          indexes=self.index_declarations)
         program, program_variables_dict, definitions = semantic(program)
         check_program_degrees(program, program_variables_dict, definitions)
         factorize_program(program, program_variables_dict, definitions)
@@ -639,6 +644,17 @@ class GbomlGraph:
         parameter = self.create_parameter(identifier, value)
         self.global_parameters.append(parameter)
 
+    def add_index_declarations(self, index_declarations):
+        """
+        Add index declarations to the graph, each one an extent named with a
+        capital letter over which an index of the same name in lower case runs
+
+        Args:
+           index_declarations (list <Parameter>) : list of Parameter objects
+
+        """
+        self.index_declarations += list(index_declarations)
+
     @staticmethod
     def set_parsing_cache_limit(size):
         """set_parsing_cache_limit
@@ -679,6 +695,37 @@ class GbomlGraph:
         else:
             error_("Unaccepted type value for global parameter "
                    + str(type(value)))
+
+    @classmethod
+    def from_file(cls, filename, cache=True):
+        """
+        class method building a graph out of everything a GBOML file declares,
+        which is its time horizon, global parameters, index declarations,
+        nodes and hyperedges
+
+        Args:
+           filename (str) : path to GBOML input file
+           cache (bool) : activate caching all the hypergraphs read
+                          during import by default set to true
+
+        Returns:
+            graph (GbomlGraph) : graph holding the whole file
+
+        """
+        old_dir, cut_filename = move_to_directory(filename)
+        parsed_file = parse_file(cut_filename, cache)
+        nodes = [deepcopy(node) for node in parsed_file.get_nodes()]
+        hyperedges = [deepcopy(edge) for edge in parsed_file.get_links()]
+        global_parameters = deepcopy(parsed_file.get_global_parameters())
+        index_declarations = deepcopy(parsed_file.get_index_declarations())
+        os.chdir(old_dir)
+
+        graph = cls(parsed_file.get_time().get_value())
+        graph.add_nodes_in_model(*nodes)
+        graph.add_hyperedges_in_model(*hyperedges)
+        graph.add_global_parameters(global_parameters)
+        graph.add_index_declarations(index_declarations)
+        return graph
 
     @staticmethod
     def import_all_nodes_and_edges(filename, cache=True):

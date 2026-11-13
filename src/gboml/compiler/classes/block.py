@@ -7,7 +7,7 @@ import math
 import numpy as np  # type: ignore
 from scipy.sparse import coo_array  # type: ignore
 
-RowMask = np.ndarray[tuple[int], np.dtype[np.bool_]]
+RowMask = np.ndarray[tuple[int, ...], np.dtype[np.bool_]]
 
 
 def combine_valid(first: RowMask | None, second: RowMask | None) -> RowMask | None:
@@ -113,21 +113,21 @@ class Term:
 
 class Block:
     """
-    The polynomial an expression reduces to over `nb_rows` rows. See the module
-    docstring.
+    The polynomial an expression reduces to over the rows `row_shape` lays
+    out. See the module docstring.
     """
 
-    __slots__ = ("nb_rows", "constant", "linear", "quadratic", "valid")
+    __slots__ = ("constant", "linear", "quadratic", "row_shape", "valid")
 
     def __init__(
         self,
-        nb_rows: int,
+        row_shape: tuple[int, ...],
         constant: Term,
         linear: list[Term] | None = None,
         quadratic: list[Term] | None = None,
         valid: RowMask | None = None,
     ) -> None:
-        self.nb_rows = nb_rows
+        self.row_shape = row_shape
         self.constant = constant
         self.linear = linear if linear is not None else []
         self.quadratic = quadratic if quadratic is not None else []
@@ -135,7 +135,7 @@ class Block:
 
     @staticmethod
     def of_constant(
-        nb_rows: int, rank: int, value: np.ndarray, valid: RowMask | None = None
+        row_shape: tuple[int, ...], rank: int, value: np.ndarray, valid: RowMask | None = None
     ) -> "Block":
         """
         of_constant function : the block a subexpression holding no variable
@@ -143,7 +143,7 @@ class Block:
                                one value per position of the rank it was
                                evaluated at, an axis it does not vary along
                                being length one
-        INPUT:  nb_rows -> number of rows
+        INPUT:  row_shape -> extents of the axes the rows run over
                 rank -> number of axes the expression is evaluated over
                 value -> the value the compiled expression evaluated to
                 valid -> mask of the rows still valid, or None
@@ -152,17 +152,17 @@ class Block:
         value = np.asarray(value, dtype=float)
         assert value.ndim == rank
 
-        return Block(nb_rows, Term(value), valid=valid)
+        return Block(row_shape, Term(value), valid=valid)
 
     @staticmethod
     def of_variable(
-        nb_rows: int, rank: int, column: np.ndarray, valid: RowMask | None = None
+        row_shape: tuple[int, ...], rank: int, column: np.ndarray, valid: RowMask | None = None
     ) -> "Block":
         """
         of_variable function : the block one variable of the problem reduces
                                to, that is a single degree one entry per
                                position
-        INPUT:  nb_rows -> number of rows
+        INPUT:  row_shape -> extents of the axes the rows run over
                 rank -> number of axes the expression is evaluated over
                 column -> the column the variable is read at, one per position
                           or one for all of them
@@ -174,7 +174,7 @@ class Block:
         assert column.ndim == rank
 
         return Block(
-            nb_rows,
+            row_shape,
             Term(np.zeros((1,) * rank)),
             [Term(np.ones((1,) * rank), (column,))],
             valid=valid,
@@ -193,7 +193,7 @@ class Block:
     def negated(self) -> "Block":
 
         return Block(
-            self.nb_rows,
+            self.row_shape,
             self.constant.negated(),
             [term.negated() for term in self.linear],
             [term.negated() for term in self.quadratic],
@@ -212,7 +212,7 @@ class Block:
         """
 
         return Block(
-            self.nb_rows,
+            self.row_shape,
             self.constant.scaled(factor),
             [term.scaled(factor) for term in self.linear],
             [term.scaled(factor) for term in self.quadratic],
@@ -230,7 +230,7 @@ class Block:
         kept = None if bool(filled.all()) else filled
 
         return Block(
-            self.nb_rows,
+            self.row_shape,
             self.constant.summed_over(width, kept),
             [term.summed_over(width, kept) for term in self.linear],
             [term.summed_over(width, kept) for term in self.quadratic],
@@ -247,7 +247,7 @@ class Block:
         OUTPUT: ndarray of shape (number of rows the mask keeps,)
         """
 
-        return np.broadcast_to(self.constant.values, (self.nb_rows,))[valid]
+        return np.broadcast_to(self.constant.values, self.row_shape)[valid]
 
     def assemble(self, valid: RowMask) -> tuple[coo_array | None, coo_array | None]:
         """
@@ -262,11 +262,11 @@ class Block:
         OUTPUT: (coo_array or None, coo_array or None)
         """
 
-        nb_kept_rows = np.count_nonzero(valid)
+        nb_kept_rows = int(np.count_nonzero(valid))
 
         return (
-            _build_sparse_array(self.linear, valid, nb_kept_rows, self.nb_rows),
-            _build_sparse_array(self.quadratic, valid, nb_kept_rows, self.nb_rows),
+            _build_sparse_array(self.linear, valid, nb_kept_rows, self.row_shape),
+            _build_sparse_array(self.quadratic, valid, nb_kept_rows, self.row_shape),
         )
 
 
@@ -280,7 +280,7 @@ def add_blocks(blocks: list[Block]) -> Block:
     if len(blocks) == 1:
         return blocks[0]
 
-    nb_rows = blocks[0].nb_rows
+    row_shape = blocks[0].row_shape
     constant = blocks[0].constant.values
     linear = list(blocks[0].linear)
     quadratic = list(blocks[0].quadratic)
@@ -293,7 +293,7 @@ def add_blocks(blocks: list[Block]) -> Block:
         quadratic += block.quadratic
         valid = combine_valid(valid, block.valid)
 
-    return Block(nb_rows, Term(constant), linear, quadratic, valid)
+    return Block(row_shape, Term(constant), linear, quadratic, valid)
 
 
 def multiply_blocks(left: Block, right: Block) -> Block:
@@ -306,7 +306,7 @@ def multiply_blocks(left: Block, right: Block) -> Block:
     OUTPUT: Block
     """
 
-    nb_rows = left.nb_rows
+    row_shape = left.row_shape
     valid = combine_valid(left.valid, right.valid)
     left_constant = left.constant.values
     right_constant = right.constant.values
@@ -330,7 +330,7 @@ def multiply_blocks(left: Block, right: Block) -> Block:
         for right_term in right.linear:
             quadratic.append(_outer_product(left_term, right_term))
 
-    return Block(nb_rows, Term(constant), linear, quadratic, valid)
+    return Block(row_shape, Term(constant), linear, quadratic, valid)
 
 
 def _outer_product(left_term: Term, right_term: Term) -> Term:
@@ -368,7 +368,7 @@ def _outer_product(left_term: Term, right_term: Term) -> Term:
 
 
 def _gather_nonzero_terms(
-    terms: list[Term], valid: RowMask, nb_rows: int
+    terms: list[Term], valid: RowMask, row_shape: tuple[int, ...]
 ) -> tuple[np.ndarray, ...]:
     """
     _gather_nonzero_terms function : turns a list of terms into flat arrays,
@@ -384,29 +384,32 @@ def _gather_nonzero_terms(
     what was actually written.
     INPUT:  terms -> non empty list of Term objects, all of the same degree,
                      emptied by the call
-            valid -> ndarray, the rows to keep
-            nb_rows -> number of rows the terms were evaluated at, before
-                       valid narrows them down
+            valid -> ndarray over the row axes, the rows to keep
+            row_shape -> extents of the axes the rows were evaluated at,
+                         before valid narrows them down
     OUTPUT: the rows array, then the values and one array per column of the
             terms, all of the same length
     """
 
     keep_every_row = bool(valid.all())
-    row_number = None if keep_every_row else np.cumsum(valid) - 1
+    nb_row_axes = len(row_shape)
+    # for every row of the grid, the row it becomes in the matrix once the
+    # dropped ones are gone, in the shape kept[:nb_row_axes] can index
+    row_number = (np.cumsum(valid.ravel()) - 1).reshape(row_shape)
 
+    nb_rows = math.prod(row_shape)
     upper_bound = sum(nb_rows * math.prod(term.widths) for term in terms)
     rows = np.empty(upper_bound, dtype=int)
     values = np.empty(upper_bound, dtype=float)
     columns = tuple(np.empty(upper_bound, dtype=int) for _ in range(terms[0].degree()))
     written = 0
-    row_range = np.arange(nb_rows)
 
     # popping from the end is what releases each term, and reversing first
     # keeps the entries in the order they were written in
     terms.reverse()
     while terms:
         term = terms.pop()
-        shape = (nb_rows,) + term.widths
+        shape = row_shape + term.widths
         term_values = np.broadcast_to(term.values, shape)
         fully_filled = term.filled.all()
         live = term_values != 0.0
@@ -414,7 +417,7 @@ def _gather_nonzero_terms(
         if keep_every_row and fully_filled and live.all():
             # every cell is a real, kept entry: ravel instead of masking
             row_indices = np.broadcast_to(
-                row_range.reshape((nb_rows,) + (1,) * len(term.widths)),
+                row_number.reshape(row_shape + (1,) * len(term.widths)),
                 shape,
             ).ravel()
             entry_values = term_values.ravel()
@@ -425,13 +428,13 @@ def _gather_nonzero_terms(
         else:
             if not keep_every_row:
                 # remove rows that should be excluded
-                live &= valid.reshape((nb_rows,) + (1,) * len(term.widths))
+                live &= valid.reshape(row_shape + (1,) * len(term.widths))
             if not fully_filled:
                 # remove ragged terms in the width
                 live &= np.broadcast_to(term.filled, shape)
 
             kept = np.nonzero(live)
-            row_indices = kept[0] if keep_every_row else row_number[kept[0]]
+            row_indices = row_number[kept[:nb_row_axes]]
             entry_values = term_values[kept]
             entry_columns = [
                 np.broadcast_to(term_column, shape)[kept]
@@ -457,7 +460,10 @@ def _gather_nonzero_terms(
 
 
 def _build_sparse_array(
-    terms: list[Term], valid: RowMask, nb_kept_rows: int, nb_rows: int
+    terms: list[Term],
+    valid: RowMask,
+    nb_kept_rows: int,
+    row_shape: tuple[int, ...],
 ) -> coo_array | None:
     """
     _build_sparse_array function : build the terms of a block as a coo_array
@@ -468,7 +474,7 @@ def _build_sparse_array(
     INPUT:  terms -> list of Term objects, all of the same degree
             valid -> mask over the rows of the block
             nb_kept_rows -> number of rows the mask keeps
-            nb_rows -> number of rows the terms were evaluated at
+            row_shape -> extents of the axes the rows were evaluated at
     OUTPUT: coo_array of shape (nb_kept_rows, *ncols), or None when `terms` is
             empty
     """
@@ -479,7 +485,7 @@ def _build_sparse_array(
     degree = terms[0].degree()
     assert degree > 0 and all(term.degree() == degree for term in terms)
 
-    term_rows, values, *columns = _gather_nonzero_terms(terms, valid, nb_rows)
+    term_rows, values, *columns = _gather_nonzero_terms(terms, valid, row_shape)
     if len(columns) == 2:
         # a product is commutative so x * y and y * x are the very same entry.
         columns = [np.minimum(*columns), np.maximum(*columns)]

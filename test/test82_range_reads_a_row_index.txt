@@ -1,0 +1,15 @@
+// A range is evaluated once, before any row exists, so the index numbering
+// those rows names nothing there. The row set this asks for is written with
+// a `where` instead.
+#TIMEHORIZON
+T = 2;
+#INDEXES
+N = 3;
+
+#NODE A
+#VARIABLES
+internal : y[N];
+#CONSTRAINTS
+bad : y[k] >= 0 for k in [0:n];
+#OBJECTIVES
+min : y[0];

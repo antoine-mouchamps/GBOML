@@ -101,6 +101,7 @@ reserved = {
     '#OBJECTIVES': 'OBJ',
     '#TIMEHORIZON': 'TIME',
     "#GLOBAL": "GLOBAL",
+    "#INDEXES": "INDEXES",
     "#HYPEREDGE": "HYPEREDGE",
     "#EXPRESSION": "EXPRESSION",
     }

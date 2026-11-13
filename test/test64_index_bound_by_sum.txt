@@ -1,0 +1,11 @@
+#TIMEHORIZON
+T = 3;
+#INDEXES
+N = 4;
+#NODE A
+#VARIABLES
+internal sizing : x[T];
+#CONSTRAINTS
+c : x[0] == sum(x[n] for n in [0:2]);
+#OBJECTIVES
+min : x[0];

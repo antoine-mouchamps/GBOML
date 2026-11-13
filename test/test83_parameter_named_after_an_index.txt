@@ -1,0 +1,17 @@
+// An index names the whole model, so nothing inside may take either of its
+// two names. Without this the node's own N is accepted and then quietly
+// ignored, the constraint reading the index extent 2 instead of 100.
+#TIMEHORIZON
+T = 1;
+#INDEXES
+N = 2;
+
+#NODE A
+#PARAMETERS
+N = 100;
+#VARIABLES
+internal : y[1];
+#CONSTRAINTS
+bad : y[0] >= N;
+#OBJECTIVES
+min : y[0];

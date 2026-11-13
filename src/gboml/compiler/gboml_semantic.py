@@ -24,6 +24,8 @@ from .classes import (
 )
 from .classes.error import RedefinitionError
 
+import math
+
 import numpy as np  # type: ignore
 from .utils import error_, get_branch_in_nested_dict, \
     update_branch_in_nested_dict, get_layer_in_nested_dict
@@ -38,7 +40,6 @@ def semantic(program: Program) -> tuple:
 
     node_list = program.get_nodes()
     link_list = program.get_links()
-    check_layer_repetition(node_list, link_list)
 
     definitions = dict()
     time_parameter = Parameter("T", Expression("literal", time_value))
@@ -48,6 +49,8 @@ def semantic(program: Program) -> tuple:
     global_param = program.get_dict_global_parameters()
     parameter_evaluation(global_param, definitions)
     definitions["global"] = global_param
+    indexes = declare_indexes(program, definitions, global_param)
+    check_layer_repetition(node_list, link_list, indexes)
     program_variables_dict = {}
 
     global_index = 0
@@ -61,30 +64,144 @@ def semantic(program: Program) -> tuple:
         check_and_extend_parameters_variables_in_nodes(node_list,
                                                        program_variables_dict,
                                                        definitions, [],
-                                                       global_index)
-    check_and_extend_parameters_in_edges(link_list, definitions, [])
+                                                       global_index, indexes)
+    check_and_extend_parameters_in_edges(link_list, definitions, [], indexes)
 
     for node in node_list:
         node_name = node.get_name()
-        recursive_node_name_addition(node)
+        recursive_node_name_addition(node, indexes)
         current_definition = \
-            {"T": definitions["T"], "global": definitions["global"],
+            {**indexes,
+             "global": definitions["global"],
              node_name: definitions[node_name]}
         recursive_check_definition_node(node, current_definition,
-                                        program_variables_dict, definitions)
+                                        program_variables_dict, definitions,
+                                        indexes)
 
     for link in link_list:
         edge_name = link.get_name()
-        add_link_names(link)
+        add_link_names(link, indexes)
         current_definition = \
-            {"T": definitions["T"], "global": definitions["global"],
+            {**indexes,
+             "global": definitions["global"],
              edge_name: definitions[edge_name]}
-        check_definition_link(link, program_variables_dict, current_definition)
+        check_definition_link(link, program_variables_dict, current_definition, indexes)
 
     program.set_nb_var_index(global_index)
     program.set_variables_dict(program_variables_dict)
     program.set_global_parameters(global_param)
     return program, program_variables_dict, definitions
+
+
+def reserved_index_names(indexes):
+    """The two names each index puts in scope."""
+
+    return [name for index in indexes for name in (index, index.lower())]
+
+
+def check_index_is_not_declared(name, indexes, line, bound_by):
+    """
+    check_index_is_not_declared function : refuses a loop or a sum binding
+    a name a declared index already runs over.
+    INPUT:  name -> the index a loop or a sum wants to bind
+            indexes -> the index table of the program
+            line -> where it is written
+            bound_by -> what wants to bind it, for the message
+    OUTPUT: None
+    """
+
+    if name in reserved_index_names(indexes):
+        error_(
+            "ERROR: " + str(name) + " is a declared index and can not "
+            "be used as the index of a " + bound_by + " at line " + str(line)
+        )
+
+
+def check_range_reads_no_row_index(obj, kind, indexes):
+    """
+    check_range_reads_no_row_index function : a `for` range is evaluated
+    once, before any row exists, so it can not read an index which numbers
+    those rows. The extent may be read there, the index may not.
+    INPUT:  obj -> the constraint or the objective carrying the range
+            kind -> which of the two, for the message
+            indexes -> the index table of the program
+    OUTPUT: None
+    """
+
+    row_indexes = [name.lower() for name in indexes] + [obj.get_index_var()]
+    if obj.get_time_interval().depends_on_index(row_indexes):
+        error_(
+            "ERROR: the range of the " + kind + " at line "
+            + str(obj.get_line()) + " reads an index which numbers its own"
+            " rows, write the extent here and select the rows with a `where`"
+        )
+
+
+def declare_indexes(program, definitions: dict, global_param: dict) -> dict:
+    """
+    declare_indexes function : evaluates the #INDEXES section and puts every
+    entry in the top level namespace, where the time horizon already sits.
+
+    An entry is an ordinary parameter declaration and declares two names :
+    `N = 24;` gives a parameter N holding 24 and an index n running over 0
+    to 23. The index being the name in lower case, the declaration has to
+    carry a capital. The time horizon declares T and t the same way.
+    INPUT:  program -> Program object, the table is stored on it
+            definitions -> the top level namespace, written into
+            global_param -> dictionary of the global parameters
+    OUTPUT: the index table, dictionary of <name, Parameter> in declaration
+            order, the time horizon first
+    """
+
+    namespace = dict(global_param)
+    namespace.update(definitions)
+    declared = {
+        parameter.get_name(): parameter
+        for parameter in program.get_index_declarations()
+    }
+
+    for name, parameter in declared.items():
+        line = str(parameter.get_line())
+        if name.lower() == name:
+            error_(
+                "ERROR: an index is declared with a capital letter, the "
+                "index itself being the same name in lower case. "
+                + name
+                + " at line "
+                + line
+                + " leaves no room for one"
+            )
+        if name in namespace:
+            error_(
+                "ERROR: " + name + " is already the name of a parameter, "
+                "at line " + line
+            )
+        if name.lower() in {other.lower() for other in namespace}:
+            error_(
+                "ERROR: the index " + name.lower() + " is declared twice, "
+                "at line " + line
+            )
+        namespace[name] = parameter
+
+    parameter_evaluation(declared, namespace)
+
+    for name, parameter in declared.items():
+        extent = parameter.get_extent()
+        if extent is None or extent <= 0:
+            error_(
+                "ERROR: the index " + name + " must run over a positive "
+                "whole number of values, got "
+                + str(parameter.get_value())
+                + " at line "
+                + str(parameter.get_line())
+            )
+        parameter.set_value([extent])
+        definitions[name] = parameter
+
+    index_table = {"T": definitions["T"], **declared}
+    program.set_index_table(index_table)
+
+    return index_table
 
 
 def check_constraint_exists(node_list: list, hyperlink_list: list):
@@ -143,22 +260,25 @@ def check_and_extend_parameters_variables_in_nodes(nodes_list: list,
                                                    program_variables_dict: dict,
                                                    definitions: dict,
                                                    depth_list: list,
-                                                   global_index: int):
+                                                   global_index: int,
+                                                   indexes: dict):
     for node in nodes_list:
         node_name = node.get_name()
         variables_changes = node.get_variables_changes()
         parameters_changes = node.get_parameters_changes()
         # Retrieve node parameter dictionary
-        node_parameters = node.get_dictionary_parameters()
-        node_variables = node.get_dictionary_variables(get_id=False)
-        node_expressions = node.get_dictionary_expressions()
+        reserved = reserved_index_names(indexes)
+        node_parameters = node.get_dictionary_parameters(reserved)
+        node_variables = node.get_dictionary_variables(get_id=False,
+                                                       reserved_names=reserved)
+        node_expressions = node.get_dictionary_expressions(reserved)
         apply_changes_variables(node_variables, variables_changes)
         apply_changes_parameters(node_parameters, parameters_changes)
         match_dictionaries(node_parameters, node_variables, node_expressions)
         _, flat_branch_dictionary = \
             get_branch_in_nested_dict(definitions, depth_list, not_lower=True)
         flat_branch_dictionary["global"] = definitions["global"]
-        flat_branch_dictionary["T"] = definitions["T"]
+        flat_branch_dictionary.update(indexes)
         parameter_evaluation(node_parameters, flat_branch_dictionary)
 
         flat_branch_dictionary[node_name] = node_parameters
@@ -175,14 +295,15 @@ def check_and_extend_parameters_variables_in_nodes(nodes_list: list,
         global_index = \
             check_and_extend_parameters_variables_in_nodes(
                 node.get_sub_nodes(),
-                program_variables_dict,
-                definitions, depth_list, global_index)
+                           program_variables_dict,
+                           definitions, depth_list, global_index,
+                           indexes)
         check_and_extend_parameters_in_edges(node.get_sub_hyperedges(),
-                                             definitions, depth_list)
+                                             definitions, depth_list, indexes)
         _, nested_nodes_variables = get_layer_in_nested_dict(
             program_variables_dict, depth_list, only_dict=True)
         depth_list.remove(node_name)
-        add_node_in_variable_index(node)
+        add_node_in_variable_index(node, indexes)
         global_index = set_size_variables(node_variables,
                                           flat_branch_dictionary,
                                           global_index,
@@ -193,37 +314,39 @@ def check_and_extend_parameters_variables_in_nodes(nodes_list: list,
     return global_index
 
 
-def add_node_in_variable_index(node):
+def add_node_in_variable_index(node, indexes):
+    reserved = reserved_index_names(indexes)
     vars = node.get_variables()
     for var in vars:
         variable_identifier = var.get_identifier()
-        id_expression = variable_identifier.get_expression()
-        if id_expression is not None:
-            add_node_names_expression(id_expression, node, [])
+        for id_expression in variable_identifier.get_expressions():
+            add_node_names_expression(id_expression, node, reserved)
 
-        child_identifier = var.get_child_assignment()
-        if child_identifier is not None:
-            child_expression = child_identifier.get_expression()
-            if child_expression is not None:
-                add_node_names_expression(child_expression, node, [])
+        # what an assignment writes on the right is read in the node holding
+        # it, the same as what it writes on the left
+        for gathered in var.gathered_identifiers():
+            for id_expression in gathered.get_expressions():
+                add_node_names_expression(id_expression, node, reserved)
 
 
 def check_and_extend_parameters_in_edges(edge_list: list,
                                          definitions: dict,
-                                         depth_list: list):
+                                         depth_list: list,
+                                         indexes: dict):
     for edge in edge_list:
         edge_name = edge.get_name()
         parameters_changes = edge.get_parameters_changes()
         names_changes = edge.get_names_changes()
         # Retrieve node parameter dictionary
-        edge_parameters = edge.get_dictionary_parameters()
+        edge_parameters = edge.get_dictionary_parameters(
+            reserved_index_names(indexes))
         apply_changes_parameters(edge_parameters, parameters_changes)
         change_node_names_in_edge(edge, names_changes)
         _, flat_branch_dictionary = get_branch_in_nested_dict(definitions,
                                                               depth_list,
                                                               not_lower=True)
         flat_branch_dictionary["global"] = definitions["global"]
-        flat_branch_dictionary["T"] = definitions["T"]
+        flat_branch_dictionary.update(indexes)
         parameter_evaluation(edge_parameters, flat_branch_dictionary)
         edge.set_parameter_dict(edge_parameters)
         _, definitions = update_branch_in_nested_dict(definitions,
@@ -251,13 +374,15 @@ def change_node_names_in_edge(edge, names_changes):
 
 
 def check_program_degrees(program, variables, definitions):
+    indexes = program.get_index_table()
     definition_accumulator_dict = \
-        {"T": definitions["T"], "global": definitions["global"]}
+        {**indexes, "global": definitions["global"]}
     nodes = program.get_nodes()
     hyperedges = program.get_links()
     recursive_application_on_nodes_hyperedges(nodes, hyperedges, variables,
                                               definitions,
                                               definition_accumulator_dict,
+                                              indexes,
                                               check_expressions_dependency,
                                               check_expressions_dependency_link)
 
@@ -267,6 +392,7 @@ def recursive_application_on_nodes_hyperedges(nodes,
                                               variables: dict,
                                               definitions,
                                               accumulator_dict,
+                                              indexes: dict,
                                               function_nodes,
                                               function_hyperedge):
     for node in nodes:
@@ -274,41 +400,43 @@ def recursive_application_on_nodes_hyperedges(nodes,
         sub_nodes = node.get_sub_nodes()
         sub_edges = node.get_sub_hyperedges()
         accumulator_dict[node_name] = definitions[node_name]
-        function_nodes(node, variables, accumulator_dict)
+        function_nodes(node, variables, accumulator_dict, indexes)
         recursive_application_on_nodes_hyperedges(sub_nodes, sub_edges,
                                                   variables[node_name],
                                                   definitions[node_name],
-                                                  accumulator_dict,
+                                                  accumulator_dict, indexes,
                                                   function_nodes,
                                                   function_hyperedge)
         accumulator_dict.pop(node_name)
 
     for link in hyperedges:
         accumulator_dict[link.get_name()] = definitions[link.get_name()]
-        function_hyperedge(link, variables, accumulator_dict)
+        function_hyperedge(link, variables, accumulator_dict, indexes)
         del accumulator_dict[link.get_name()]
 
 
 def factorize_program(program, variables, definitions):
+    indexes = program.get_index_table()
     definition_accumulator_dict = \
-        {"T": definitions["T"], "global": definitions["global"]}
+        {**indexes, "global": definitions["global"]}
     nodes = program.get_nodes()
     hyperedges = program.get_links()
     recursive_application_on_nodes_hyperedges(nodes, hyperedges,
                                               variables, definitions,
                                               definition_accumulator_dict,
+                                              indexes,
                                               factorize_node,
                                               factorize_hyperedge)
 
 
-def factorize_node(node, variables, definitions):
+def factorize_node(node, variables, definitions, indexes):
     name = node.get_name()
     start_time = t.time()
     constraints = node.get_constraints()
     objectives = node.get_objectives()
     constraint_factors = []
     for constraint in constraints:
-        factor = Factorize(constraint)
+        factor = Factorize(constraint, indexes)
         factor.factorize_constraint(variables, definitions)
         constraint_factors.append(factor)
 
@@ -316,7 +444,7 @@ def factorize_node(node, variables, definitions):
 
     objective_factors = []
     for objective in objectives:
-        factor = Factorize(objective)
+        factor = Factorize(objective, indexes)
         factor.factorize_objective(variables, definitions)
         objective_factors.append(factor)
     node.set_objective_factors(objective_factors)
@@ -325,13 +453,13 @@ def factorize_node(node, variables, definitions):
           % (name, t.time() - start_time))
 
 
-def factorize_hyperedge(edge, variables, definitions):
+def factorize_hyperedge(edge, variables, definitions, indexes):
     name = edge.get_name()
     constraints = edge.get_constraints()
     constraint_factors = []
 
     for constraint in constraints:
-        factor = Factorize(constraint)
+        factor = Factorize(constraint, indexes)
         factor.factorize_constraint(variables, definitions)
         constraint_factors.append(factor)
     edge.set_constraint_factors(constraint_factors)
@@ -342,7 +470,8 @@ def factorize_hyperedge(edge, variables, definitions):
 
 def check_expressions_dependency_link(link: Hyperedge,
                                       variables: dict,
-                                      parameters_obj: dict):
+                                      parameters_obj: dict,
+                                      indexes: dict):
     constraints = link.get_constraints()
     for cons in constraints:
         rhs = cons.get_rhs()
@@ -360,7 +489,8 @@ def check_expressions_dependency_link(link: Hyperedge,
 
 def check_expressions_dependency(node: Node,
                                  variables: dict,
-                                 parameters_obj: dict):
+                                 parameters_obj: dict,
+                                 indexes: dict):
     """
     check_expressions_dependancy function : checks the expressions inside a node
     INPUT:  node -> Node object
@@ -576,7 +706,9 @@ def replace_parameters_node(node: Node, definitions):
 
 
 def check_definition_link(link: Hyperedge, variables_dict: dict,
-                          parameters_dict: dict, parent_hood=None):
+                          parameters_dict: dict,
+                          indexes: dict,
+                          parent_hood=None):
     if parent_hood is None:
         parent_hood = []
 
@@ -585,6 +717,10 @@ def check_definition_link(link: Hyperedge, variables_dict: dict,
 
     for constraint in constraints_list:
         index_var = constraint.get_index_var()
+        if constraint.get_time_interval() is not None:
+            check_index_is_not_declared(
+                index_var, indexes, constraint.get_line(), "constraint"
+            )
         if link_name in parameters_dict and \
                 index_var in parameters_dict[link_name]:
             error_("ERROR: index name " + str(index_var) + " at line "
@@ -592,24 +728,29 @@ def check_definition_link(link: Hyperedge, variables_dict: dict,
                    + " is already used to define parameter "
                    + str(parameters_dict[link_name][index_var]))
 
-        # a `for` range may only read parameters, never an index or a variable
+        # a `for` range reads the index extents, never a row index nor a variable
         time_interval = constraint.get_time_interval()
         if time_interval is not None:
+            check_range_reads_no_row_index(constraint, "constraint", indexes)
             for bound in time_interval.get_interval():
                 check_definition_expression(bound, variables_dict,
-                                            parameters_dict, [],
+                                            parameters_dict, indexes,
+                                            list(indexes),
                                             variables_allowed=False,
                                             in_node_name_parameter=link_name,
+                                            variable_type="external",
                                             parent_hood=parent_hood)
 
-        reserved = [index_var]
+        reserved = [index_var] + reserved_index_names(indexes)
         lhs = constraint.get_lhs()
         check_definition_expression(lhs, variables_dict, parameters_dict,
+                                    indexes,
                                     reserved, in_node_name_parameter=link_name,
                                     variable_type="external",
                                     parent_hood=parent_hood)
         rhs = constraint.get_rhs()
         check_definition_expression(rhs, variables_dict, parameters_dict,
+                                    indexes,
                                     reserved, in_node_name_parameter=link_name,
                                     variable_type="external",
                                     parent_hood=parent_hood)
@@ -620,6 +761,7 @@ def check_definition_link(link: Hyperedge, variables_dict: dict,
                 condition,
                 variables_dict,
                 parameters_dict,
+                indexes,
                 reserved,
                 in_node_name_parameter=link_name,
                 variable_type="external",
@@ -629,13 +771,14 @@ def check_definition_link(link: Hyperedge, variables_dict: dict,
 
 def recursive_check_definition_node(node: Node, current_definitions,
                                     variables_dict: dict, parameters_dict: dict,
+                                    indexes: dict,
                                     parent_hood=None):
     if parent_hood is None:
         parent_hood = []
     node_name = node.get_name()
     sub_nodes, sub_edges = node.get_sub_nodes(), node.get_sub_hyperedges()
     check_definition(node, variables_dict, current_definitions,
-                     parent_hood=parent_hood)
+                     indexes, parent_hood=parent_hood)
     variables_dict = variables_dict[node_name]
     parameters_dict = parameters_dict[node_name]
     parent_hood.append(node_name)
@@ -645,26 +788,34 @@ def recursive_check_definition_node(node: Node, current_definitions,
         sub_node_variables = {sub_node_name: variables_dict[sub_node_name]}
         recursive_check_definition_node(sub_node, current_definitions,
                                         sub_node_variables,
-                                        parameters_dict, parent_hood)
+                                        parameters_dict,
+                                        indexes,
+                                        parent_hood)
         current_definitions.pop(sub_node_name)
 
     for edge in sub_edges:
         edge_name = edge.get_name()
         current_definitions[edge_name] = parameters_dict[edge_name]
-        check_definition_link(edge, variables_dict,
-                              current_definitions, parent_hood)
+        check_definition_link(
+            edge, variables_dict, current_definitions, indexes, parent_hood
+        )
         current_definitions.pop(edge_name)
     parent_hood.pop(-1)
 
 
-def check_definition(node: Node, variables_dict: dict,
-                     parameters_dict: dict, parent_hood):
+def check_definition(
+    node: Node, variables_dict: dict, parameters_dict: dict, indexes: dict, parent_hood
+):
     objectives_list = node.get_objectives()
     constraints_list = node.get_constraints()
     node_name = node.get_name()
 
     for constraint in constraints_list:
         index_var = constraint.get_index_var()
+        if constraint.get_time_interval() is not None:
+            check_index_is_not_declared(
+                index_var, indexes, constraint.get_line(), "constraint"
+            )
 
         if node_name in parameters_dict and \
                 index_var in parameters_dict[node_name]:
@@ -680,26 +831,31 @@ def check_definition(node: Node, variables_dict: dict,
                    + " is already used to define parameter "
                    + str(variables_dict[node_name][index_var]))
 
-        # a `for` range may only read parameters, never an index or a variable
+        # a `for` range reads the index extents, never a row index nor a variable
         time_interval = constraint.get_time_interval()
         if time_interval is not None:
+            check_range_reads_no_row_index(constraint, "constraint", indexes)
             for bound in time_interval.get_interval():
                 check_definition_expression(bound, variables_dict,
-                                            parameters_dict, [],
+                                            parameters_dict,
+                                            indexes,
+                                            list(indexes),
                                             variables_allowed=False,
                                             in_node_name_variable=node_name,
                                             in_node_name_parameter=node_name,
                                             parent_hood=parent_hood)
 
-        reserved = [index_var]
+        reserved = [index_var] + reserved_index_names(indexes)
         lhs = constraint.get_lhs()
-        check_definition_expression(lhs, variables_dict,
-                                    parameters_dict, reserved,
+        check_definition_expression(lhs, variables_dict, parameters_dict,
+                                    indexes,
+                                    reserved,
                                     in_node_name_variable=node_name,
                                     in_node_name_parameter=node_name,
                                     parent_hood=parent_hood)
         rhs = constraint.get_rhs()
         check_definition_expression(rhs, variables_dict, parameters_dict,
+                                    indexes,
                                     reserved,
                                     in_node_name_variable=node_name,
                                     in_node_name_parameter=node_name,
@@ -711,6 +867,7 @@ def check_definition(node: Node, variables_dict: dict,
                 condition,
                 variables_dict,
                 parameters_dict,
+                indexes,
                 reserved,
                 in_node_name_variable=node_name,
                 in_node_name_parameter=node_name,
@@ -720,6 +877,10 @@ def check_definition(node: Node, variables_dict: dict,
     for objective in objectives_list:
         expr = objective.get_expression()
         index_var = objective.get_index_var()
+        if objective.get_time_interval() is not None:
+            check_index_is_not_declared(
+                index_var, indexes, objective.get_line(), "objective"
+            )
 
         if node_name in parameters_dict and \
                 index_var in parameters_dict[node_name]:
@@ -735,23 +896,31 @@ def check_definition(node: Node, variables_dict: dict,
                    + " is already used to define parameter "
                    + str(variables_dict[node_name][index_var]))
 
-        # a `for` range may only read parameters, never an index or a variable
+        # a `for` range reads the index extents, never a row index nor a variable
         time_interval = objective.get_time_interval()
         if time_interval is not None:
+            check_range_reads_no_row_index(objective, "objective", indexes)
             for bound in time_interval.get_interval():
                 check_definition_expression(bound, variables_dict,
-                                            parameters_dict, [],
+                                            parameters_dict,
+                                            indexes,
+                                            list(indexes),
                                             variables_allowed=False,
                                             in_node_name_variable=node_name,
                                             in_node_name_parameter=node_name,
                                             parent_hood=parent_hood)
 
-        reserved = [index_var]
-        check_definition_expression(expr, variables_dict,
-                                    parameters_dict, reserved,
-                                    in_node_name_variable=node_name,
-                                    in_node_name_parameter=node_name,
-                                    parent_hood=parent_hood)
+        reserved = [index_var] + reserved_index_names(indexes)
+        check_definition_expression(
+            expr,
+            variables_dict,
+            parameters_dict,
+            indexes,
+            reserved,
+            in_node_name_variable=node_name,
+            in_node_name_parameter=node_name,
+            parent_hood=parent_hood,
+        )
 
         condition = objective.get_condition()
         if condition is not None:
@@ -759,6 +928,7 @@ def check_definition(node: Node, variables_dict: dict,
                 condition,
                 variables_dict,
                 parameters_dict,
+                indexes,
                 reserved,
                 in_node_name_variable=node_name,
                 in_node_name_parameter=node_name,
@@ -766,15 +936,73 @@ def check_definition(node: Node, variables_dict: dict,
             )
 
 
-def check_definition_condition(
-    condition, variables_dict: dict, parameters_dict: dict, reserved, **kwargs
-):
+def check_every_axis_is_indexed(kind, read, nb_axes):
+    nb_indexes = len(read.get_expressions())
+    if nb_indexes != nb_axes:
+        error_(
+            "ERROR: the "
+            + kind
+            + " "
+            + str(read.get_name())
+            + " runs over "
+            + str(nb_axes)
+            + " axis(es) and is read with "
+            + str(nb_indexes)
+            + " index(es) at line "
+            + str(read.get_line())
+            + ". Every axis has to be indexed."
+        )
 
+
+def check_variable_is_read_over_its_axes(read, declared, indexes):
+    shape = declared.get_shape()
+    offsets = read.get_expressions()
+    check_every_axis_is_indexed("variable", read, len(shape))
+
+    extents = {
+        name.lower(): parameter.get_extent() for name, parameter in indexes.items()
+    }
+    for axis, (offset, extent) in enumerate(zip(offsets, shape)):
+        # only a bare index is checked, arithmetic around one saying the two
+        # were never meant to line up
+        if offset.get_type() != "literal":
+            continue
+        seed = offset.get_name()
+        if type(seed) != Identifier or seed.get_type() != "basic":
+            continue
+
+        index_extent = extents.get(seed.get_name())
+        if index_extent is not None and index_extent != extent:
+            error_(
+                "ERROR: "
+                + str(read.get_name())
+                + " runs over "
+                + str(extent)
+                + " value(s) on axis "
+                + str(axis)
+                + " but is read with the index "
+                + str(seed.get_name())
+                + ", which runs over "
+                + str(index_extent)
+                + ", at line "
+                + str(read.get_line())
+            )
+
+
+def check_definition_condition(
+    condition,
+    variables_dict: dict,
+    parameters_dict: dict,
+    indexes: dict,
+    reserved,
+    **kwargs,
+):
     if type(condition) == Expression:
         check_definition_expression(
             condition,
             variables_dict,
             parameters_dict,
+            indexes,
             reserved,
             variables_allowed=False,
             **kwargs,
@@ -782,20 +1010,24 @@ def check_definition_condition(
     else:
         for child in condition.get_children():
             check_definition_condition(
-                child, variables_dict, parameters_dict, reserved, **kwargs
+                child, variables_dict, parameters_dict, indexes, reserved, **kwargs
             )
 
 
-def check_definition_expression(expr: Expression, variables_dict: dict,
-                                parameters_dict: dict, reserved=None,
-                                variables_allowed=True,
-                                in_node_name_variable="",
-                                in_node_name_parameter="",
-                                variable_type="", parent_hood=None):
+def check_definition_expression(
+    expr: Expression,
+    variables_dict: dict,
+    parameters_dict: dict,
+    indexes: dict,
+    reserved,
+    variables_allowed=True,
+    in_node_name_variable="",
+    in_node_name_parameter="",
+    variable_type="",
+    parent_hood=None,
+):
     if parent_hood is None:
         parent_hood = []
-    if reserved is None:
-        reserved = []
     leaves = expr.get_leafs()
 
     for leaf in leaves:
@@ -809,8 +1041,7 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
             seed_node_name = seed_identifier.get_node_name()
             seed_id_name = seed_identifier.get_name()
 
-            if seed_node_name == "" and \
-                    (seed_id_name in reserved or seed_id_name == "T"):
+            if seed_node_name == "" and seed_id_name in reserved:
                 defined = True
                 is_reserved = True
 
@@ -843,6 +1074,10 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                            + " got " + str(variable_referenced) + " of type "
                            + str(variable_referenced_type))
 
+                check_variable_is_read_over_its_axes(
+                    seed_identifier, identifier_referenced, indexes
+                )
+
             elif seed_node_name in parameters_dict and \
                     seed_id_name in parameters_dict[seed_node_name]:
                 parameter_referenced: Parameter = \
@@ -862,6 +1097,12 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                            " and usage " + str(seed_identifier) + " at line "
                            + str(seed.get_line()))
 
+                if identifier_referenced_type == "assign":
+                    shape = parameter_referenced.get_shape()
+                    check_every_axis_is_indexed(
+                        "parameter", seed_identifier, len(shape) or 1
+                    )
+
             if not defined:
                 error_("ERROR: Unknown identifier "
                        + str(seed_identifier)
@@ -878,16 +1119,19 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                        " inside node " + str(in_node_name)
                        + " is not allowed at line " + str(expr.get_line()))
 
-            expression_in_brackets = seed_identifier.get_expression()
-            if expression_in_brackets is not None:
-                check_definition_expression(expression_in_brackets,
-                                            variables_dict,
-                                            parameters_dict,
-                                            reserved,
-                                            variables_allowed=False,
-                                            in_node_name_variable=in_node_name_variable,
-                                            in_node_name_parameter=in_node_name_parameter,
-                                            variable_type=variable_type)
+            expression_in_brackets = seed_identifier.get_expressions()
+            for expression in expression_in_brackets:
+                check_definition_expression(
+                    expression,
+                    variables_dict,
+                    parameters_dict,
+                    indexes,
+                    reserved,
+                    variables_allowed=False,
+                    in_node_name_variable=in_node_name_variable,
+                    in_node_name_parameter=in_node_name_parameter,
+                    variable_type=variable_type,
+                )
 
         if leaf.get_type() == "sum":
             sum_expr: Expression = leaf
@@ -907,11 +1151,13 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                        + str(index_name) +
                        " at line " + str(leaf.get_line()))
 
+            check_index_is_not_declared(index_name, indexes, leaf.get_line(), "sum")
             for bound in time_interval.get_interval():
                 check_definition_expression(
                     bound,
                     variables_dict,
                     parameters_dict,
+                    indexes,
                     reserved,
                     variables_allowed=False,
                     in_node_name_variable=in_node_name_variable,
@@ -922,13 +1168,18 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
 
             reserved_sum = reserved + [index_name]
             for child in sum_children:
-                check_definition_expression(child, variables_dict,
-                                            parameters_dict, reserved_sum,
-                                            variables_allowed,
-                                            in_node_name_variable,
-                                            in_node_name_parameter,
-                                            variable_type,
-                                            parent_hood)
+                check_definition_expression(
+                    child,
+                    variables_dict,
+                    parameters_dict,
+                    indexes,
+                    reserved_sum,
+                    variables_allowed,
+                    in_node_name_variable,
+                    in_node_name_parameter,
+                    variable_type,
+                    parent_hood,
+                )
 
             condition = sum_expr.get_condition()
             if condition is not None:
@@ -936,6 +1187,7 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                     condition,
                     variables_dict,
                     parameters_dict,
+                    indexes,
                     reserved_sum,
                     in_node_name_variable=in_node_name_variable,
                     in_node_name_parameter=in_node_name_parameter,
@@ -944,21 +1196,21 @@ def check_definition_expression(expr: Expression, variables_dict: dict,
                 )
 
 
-def add_link_names(link: Hyperedge):
+def add_link_names(link: Hyperedge, indexes):
     constraints_list = link.get_constraints()
 
     for constraint in constraints_list:
         index_var = constraint.get_index_var()
-        reserved = [index_var]
+        reserved = [index_var] + reserved_index_names(indexes)
 
         time_interval = constraint.get_time_interval()
         if time_interval is not None:
             begin = time_interval.get_begin()
             step = time_interval.get_step()
             end = time_interval.get_end()
-            add_node_names_expression(begin, link, [])
-            add_node_names_expression(step, link, [])
-            add_node_names_expression(end, link, [])
+            add_node_names_expression(begin, link, list(indexes))
+            add_node_names_expression(step, link, list(indexes))
+            add_node_names_expression(end, link, list(indexes))
 
         condition = constraint.get_condition()
         if condition is not None:
@@ -972,22 +1224,22 @@ def add_link_names(link: Hyperedge):
         add_node_names_expression(rhs, link, reserved)
 
 
-def recursive_node_name_addition(node):
-    add_node_names(node)
+def recursive_node_name_addition(node, indexes):
+    add_node_names(node, indexes)
     for sub_node in node.get_sub_nodes():
-        recursive_node_name_addition(sub_node)
+        recursive_node_name_addition(sub_node, indexes)
 
     for sub_edge in node.get_sub_hyperedges():
-        add_link_names(sub_edge)
+        add_link_names(sub_edge, indexes)
 
 
-def add_node_names(node: Node):
+def add_node_names(node: Node, indexes):
     objectives_list = node.get_objectives()
     constraints_list = node.get_constraints()
     expressions_list = node.get_expressions()
 
     for expr_name, expression, line_number in expressions_list:
-        add_node_names_expression(expression, node, [])
+        add_node_names_expression(expression, node, list(indexes))
 
     for constraint in constraints_list:
         condition = constraint.get_condition()
@@ -996,12 +1248,12 @@ def add_node_names(node: Node):
             begin = time_interval.get_begin()
             step = time_interval.get_step()
             end = time_interval.get_end()
-            add_node_names_expression(begin, node, [])
-            add_node_names_expression(step, node, [])
-            add_node_names_expression(end, node, [])
+            add_node_names_expression(begin, node, list(indexes))
+            add_node_names_expression(step, node, list(indexes))
+            add_node_names_expression(end, node, list(indexes))
 
         index_var = constraint.get_index_var()
-        reserved = [index_var]
+        reserved = [index_var] + reserved_index_names(indexes)
 
         if condition is not None:
             condition_lhs, condition_rhs = condition.get_children()
@@ -1021,11 +1273,11 @@ def add_node_names(node: Node):
             begin = time_interval.get_begin()
             step = time_interval.get_step()
             end = time_interval.get_end()
-            add_node_names_expression(begin, node, [])
-            add_node_names_expression(step, node, [])
-            add_node_names_expression(end, node, [])
+            add_node_names_expression(begin, node, list(indexes))
+            add_node_names_expression(step, node, list(indexes))
+            add_node_names_expression(end, node, list(indexes))
         index_var = objective.get_index_var()
-        reserved = [index_var]
+        reserved = [index_var] + reserved_index_names(indexes)
         if condition is not None:
             condition_lhs, condition_rhs = condition.get_children()
             add_node_names_condition(condition_lhs, node, reserved)
@@ -1042,12 +1294,8 @@ def add_node_names_condition(condition, node, reserved):
             add_node_names_condition(child, node, reserved)
 
 
-def add_node_names_expression(expr: Expression, node,
-                              reserved_identifiers=None):
-    if reserved_identifiers is None:
-        reserved_identifiers = []
+def add_node_names_expression(expr: Expression, node, reserved):
     leaves = expr.get_leafs()
-    reserved = ["T"] + reserved_identifiers
     for leaf in leaves:
         seed = leaf.get_name()
         if type(seed) == Identifier:
@@ -1056,8 +1304,8 @@ def add_node_names_expression(expr: Expression, node,
                     identifier.get_name() not in reserved:
                 identifier.set_node(node)
             if identifier.get_type() == "assign":
-                add_node_names_expression(identifier.get_expression(), node,
-                                          reserved_identifiers)
+                for expression in identifier.get_expressions():
+                    add_node_names_expression(expression, node, reserved)
         if leaf.get_type() == "sum":
             sum_expr: Expression = leaf
             sum_children = sum_expr.get_children()
@@ -1066,9 +1314,9 @@ def add_node_names_expression(expr: Expression, node,
             begin = time_interval.get_begin()
             step = time_interval.get_step()
             end = time_interval.get_end()
-            add_node_names_expression(begin, node, reserved_identifiers)
-            add_node_names_expression(step, node, reserved_identifiers)
-            add_node_names_expression(end, node, reserved_identifiers)
+            add_node_names_expression(begin, node, reserved)
+            add_node_names_expression(step, node, reserved)
+            add_node_names_expression(end, node, reserved)
             reserved_sum = reserved + [index_name]
             for child in sum_children:
                 add_node_names_expression(child, node, reserved_sum)
@@ -1079,13 +1327,6 @@ def add_node_names_expression(expr: Expression, node,
 
 
 def check_time_horizon(time_horizon: Time):
-    variable_name = time_horizon.get_name()
-    line = time_horizon.get_line()
-    if variable_name != "T":
-        error_("Semantic error:" + str(
-            line) + ": Use \"T\"" + " as a symbol for the time horizon. \""
-               + str(variable_name) + "\" is not allowed")
-
     time_value = time_horizon.get_value()
     if type(time_value) == float and time_value.is_integer() is False:
 
@@ -1114,7 +1355,7 @@ def convert_expression_identifiers_to_basic(expression: Expression):
             identifier: Identifier = seed
             identifier_type = identifier.get_type()
             if identifier_type == "assign":
-                identifier.set_expression(None)
+                identifier.set_expressions(())
                 identifier.set_type("basic")
 
 
@@ -1300,20 +1541,21 @@ def match_dictionaries(dict1: dict, dict2: dict, dict3=None) -> None:
 
 
 def check_layer_repetition(nodes_list: list, hyperedges_list: list,
-                           parent_nodes=None) -> None:
+                           indexes: dict, parent_nodes=None) -> None:
     if parent_nodes is None:
         parent_nodes = []
-    check_names_repetitions(nodes_list + hyperedges_list + parent_nodes)
+    check_names_repetitions(nodes_list + hyperedges_list + parent_nodes,
+                            reserved_index_names(indexes))
 
     for node in nodes_list:
         sub_nodes = node.get_sub_nodes()
         sub_hyperedges = node.get_sub_hyperedges()
         parent_nodes.append(node)
-        check_layer_repetition(sub_nodes, sub_hyperedges, parent_nodes)
+        check_layer_repetition(sub_nodes, sub_hyperedges, indexes, parent_nodes)
         parent_nodes.remove(node)
 
 
-def check_names_repetitions(elements_list: list) -> None:
+def check_names_repetitions(elements_list: list, reserved_names=()) -> None:
     """
     Checks if a node name is present twice in a list of nodes
     INPUT:  elements_list -> list of node objects
@@ -1326,9 +1568,9 @@ def check_names_repetitions(elements_list: list) -> None:
     for e in elements_list:
         name = e.get_name()
 
-        if name == "T" or name == "t":
+        if name in reserved_names:
             error_('ERROR: Name "' + str(
-                name) + '" is reserved for time, used at line ' + str(
+                name) + '" is reserved for an index, used at line ' + str(
                 elements_list[i].get_line()))
 
         for k in range(i + 1, n):
@@ -1493,6 +1735,124 @@ def check_variables_type_sizes(dictionary_var: dict, dictionary_param: dict):
                     + str(var.get_line()))
 
 
+def unmatching_size(line):
+
+    error_("ERROR: unmatching size in assignment "
+           "of variable at line : " + str(line))
+
+
+def split_blocks(first_columns, shape, nb_block_indexes, wanted):
+    """The same columns, each block split into the sub blocks one more index
+    picks, which is arithmetic since a block is consecutive."""
+
+    if nb_block_indexes == wanted:
+        return first_columns
+
+    nb_sub_blocks = math.prod(shape[nb_block_indexes:wanted])
+    sub_block_size = math.prod(shape[wanted:])
+
+    return (first_columns[:, None]
+            + np.arange(nb_sub_blocks) * sub_block_size).ravel()
+
+
+def blocks_of_gathered_variable(identifier, nested_nodes_variables,
+                                dictionary_param, line):
+    """The shape one member names, the first column of every block it holds
+    and how many of its leading indexes choose one."""
+
+    node_name = identifier.get_node_name()
+    var_name = identifier.get_name()
+    if not node_name:
+        error_("ERROR: node name is required for assignments at line : "
+               + str(line))
+
+    if node_name not in nested_nodes_variables \
+            or var_name not in nested_nodes_variables[node_name]:
+        error_('ERROR: Unknown identifier ' + str(identifier)
+               + " not defined at line " + str(line))
+
+    child = nested_nodes_variables[node_name][var_name]
+    written_shape = tuple(expression.evaluate_expression(dictionary_param)
+                          for expression in identifier.get_expressions())
+    if written_shape != child.get_shape():
+        unmatching_size(line)
+
+    first_columns = child.get_block_first_columns()
+    if first_columns is None:
+        first_columns = np.array([child.get_identifier().get_index()])
+
+    return child.get_shape(), first_columns, child.get_nb_block_indexes()
+
+
+def slots_of_member(member, slot_shape, nested_nodes_variables,
+                    dictionary_param, line):
+    """
+    How many slots of the axis a list is filling one member takes, its blocks
+    written over those slots, and how many indexes choose a block inside one
+    of them. Only a name may take several, a group always taking one.
+    """
+
+    if isinstance(member, list):
+        first_columns, nb_block_indexes = blocks_of_gathered(
+            member, slot_shape, nested_nodes_variables, dictionary_param, line)
+
+        return 1, first_columns, nb_block_indexes
+
+    member_shape, first_columns, nb_block_indexes = \
+        blocks_of_gathered_variable(member, nested_nodes_variables,
+                                    dictionary_param, line)
+    if member_shape == slot_shape:
+
+        return 1, first_columns, nb_block_indexes
+
+    if member_shape[1:] != slot_shape:
+        unmatching_size(line)
+
+    # a member of one axis more spreads over that many slots, so its own first
+    # index becomes the one the list fills and stops counting inside a slot
+    first_columns = split_blocks(first_columns, member_shape,
+                                 nb_block_indexes, max(nb_block_indexes, 1))
+
+    return member_shape[0], first_columns, max(nb_block_indexes - 1, 0)
+
+
+def blocks_of_gathered(gathered, shape, nested_nodes_variables,
+                       dictionary_param, line):
+    """
+    The first column of every block a written assignment covering `shape`
+    holds, and how many of its leading indexes choose one. A list fills the
+    first axis with its members and lays their blocks end to end, splitting
+    the ones that sit shallower than the deepest.
+    """
+
+    if not isinstance(gathered, list):
+        member_shape, first_columns, nb_block_indexes = \
+            blocks_of_gathered_variable(gathered, nested_nodes_variables,
+                                        dictionary_param, line)
+        if member_shape != shape:
+            unmatching_size(line)
+
+        return first_columns, nb_block_indexes
+
+    if not shape:
+        unmatching_size(line)
+
+    slot_shape = shape[1:]
+    members = [slots_of_member(member, slot_shape, nested_nodes_variables,
+                               dictionary_param, line)
+               for member in gathered]
+    if sum(slots for slots, _, _ in members) != shape[0]:
+        unmatching_size(line)
+
+    nb_block_indexes = 1 + max(indexes for _, _, indexes in members)
+    first_columns = np.concatenate([
+        split_blocks(columns, (slots,) + slot_shape, 1 + indexes,
+                     nb_block_indexes)
+        for slots, columns, indexes in members])
+
+    return first_columns, nb_block_indexes
+
+
 def set_size_variables(dictionary_var: dict, dictionary_param: dict, index: int,
                        nested_nodes_variables) -> int:
     """
@@ -1503,42 +1863,17 @@ def set_size_variables(dictionary_var: dict, dictionary_param: dict, index: int,
         var = dictionary_var[k]
         identifier = var.get_identifier()
         identifier.set_size(dictionary_param)
-        child_assignment_identifier = var.get_child_assignment()
-        if child_assignment_identifier:
-            child_node_name = child_assignment_identifier.get_node_name()
-            child_var_name = child_assignment_identifier.get_name()
-            child_expression = child_assignment_identifier.get_expression()
-            if child_expression is None:
-                child_declared_size = 1
-            else:
-                child_declared_size = child_expression.evaluate_expression(
-                    dictionary_param)
-            if child_assignment_identifier.get_type() != identifier.get_type():
-                error_(
-                    "ERROR: assigning variables of "
-                    "different types is not allowed at line : "
-                    + str(identifier.get_line()))
-            if not child_node_name:
-                error_(
-                    "ERROR: node name is required for assignments at line : "
-                    + str(identifier.get_line()))
+        gathered = var.get_child_assignment()
+        if gathered:
+            first_columns, nb_block_indexes = blocks_of_gathered(
+                gathered, identifier.get_shape(), nested_nodes_variables,
+                dictionary_param, identifier.get_line())
 
-            if child_node_name in nested_nodes_variables and child_var_name in \
-                    nested_nodes_variables[child_node_name]:
-
-                child_variable = nested_nodes_variables[child_node_name][
-                    child_var_name]
-                child_id = child_variable.get_identifier()
-                identifier.set_index(child_id.get_index())
-                if identifier.get_size() != child_id.get_size() or \
-                        identifier.get_size() != child_declared_size:
-                    error_(
-                        "ERROR: unmatching size in assignment "
-                        "of variable at line : " + str(identifier.get_line()))
+            if nb_block_indexes == 0:
+                # one ordinary variable, so the columns stay a single block
+                identifier.set_index(int(first_columns[0]))
             else:
-                error_('ERROR: Unknown identifier ' + str(
-                    child_assignment_identifier) + " not defined at line " +
-                       str(identifier.get_line()))
+                var.set_blocks(first_columns, nb_block_indexes)
         else:
             start_index = identifier.set_index(start_index)
 
@@ -1675,8 +2010,8 @@ def no_sum_in_expression(expression: Expression):
             identifier: Identifier = seed
             identifier_type = identifier.get_type()
             if identifier_type == "assign":
-                identifier_expression = identifier.get_expression()
-                no_sum_in_expression(identifier_expression)
+                for identifier_expression in identifier.get_expressions():
+                    no_sum_in_expression(identifier_expression)
 
 
 def check_objective(expression: Expression, var_dict: dict):
@@ -2015,6 +2350,41 @@ def predicate_variables_in_expression(expression: Expression,
     return is_variable
 
 
+def set_parameter_shape(parameter, parameter_name, definitions):
+    """
+    set_parameter_shape function : reads the extents a parameter was
+    declared over and checks the values really fill them. The values stay
+    flat and are read at that shape only where the compiled expressions
+    are evaluated.
+    INPUT:  parameter -> Parameter object
+            parameter_name -> its name, for the message
+            definitions -> the namespace the extents are evaluated against
+    OUTPUT: None
+    """
+
+    shape = tuple(
+        int(expression.evaluate_expression(definitions))
+        for expression in parameter.get_shape_expressions()
+    )
+    if shape:
+        held = np.size(np.asarray(parameter.get_value()))
+        wanted = int(np.prod(shape))
+        if held != wanted:
+            error_(
+                "ERROR: the parameter "
+                + str(parameter_name)
+                + " is declared over "
+                + str(shape)
+                + ", which is "
+                + str(wanted)
+                + " value(s), but holds "
+                + str(held)
+                + " at line "
+                + str(parameter.get_line())
+            )
+    parameter.set_shape(shape)
+
+
 def parameter_evaluation(parameter_dict: dict, definitions: dict):
     """
     parameter_evaluation function : evaluates a list of parameter objects
@@ -2026,6 +2396,7 @@ def parameter_evaluation(parameter_dict: dict, definitions: dict):
     for parameter_name in parameter_dict.keys():
         parameter = parameter_dict[parameter_name]
         if parameter.read_from_file:
+            set_parameter_shape(parameter, parameter_name, input_definition)
             input_definition[parameter_name] = parameter
             continue
         e = parameter.get_expression()
@@ -2038,6 +2409,7 @@ def parameter_evaluation(parameter_dict: dict, definitions: dict):
             value = evaluate_table(parameter.get_vector(), input_definition)
 
         parameter.set_value(value)
+        set_parameter_shape(parameter, parameter_name, input_definition)
         input_definition[parameter_name] = parameter
 
 

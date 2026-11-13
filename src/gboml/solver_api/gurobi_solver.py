@@ -279,6 +279,9 @@ def gurobi_solver(
         model.optimize()
         status_code = model.getAttr("Status")
         solver_info["status"] = status_code
+        if model.IsMIP and model.SolCount > 0:
+            solver_info["best_bound"] = model.ObjBound
+            solver_info["mip_gap"] = model.MIPGap
         solution = None
         objective = None
         if status_code == 2:
@@ -296,6 +299,13 @@ def gurobi_solver(
             objective = float('-inf')
         elif status_code == 13:
 
+            status = "feasible"
+            solution = x.X
+            objective = model.getObjective().getValue()
+        elif model.SolCount > 0:
+
+            # a limit stopped the search, but the incumbent and the bound
+            # it was proved against both still stand
             status = "feasible"
             solution = x.X
             objective = model.getObjective().getValue()
